@@ -2,16 +2,6 @@
 
 ## 1. Coding Standards & Design Principles
 
-### SOLID Principles
-
-All designs must be decoupled, interface-based, and extensible. Do NOT over-engineer.
-
-- **S — Single Responsibility:** One class, one job. Keep each class and method concise and focused.
-- **O — Open/Closed:** Add new behavior via new classes or modules, not by modifying existing ones.
-- **L — Liskov Substitution:** Subclasses must be drop-in replacements for their parent type.
-- **I — Interface Segregation:** Keep interfaces small and focused. Clients should not depend on methods they do not use.
-- **D — Dependency Inversion:** Depend on abstractions (interfaces/protocols), inject concrete implementations.
-
 ### OOD Best Practices
 
 - **Favor Composition over Inheritance.** Compose behavior from small, focused objects rather than deep inheritance hierarchies.
@@ -33,6 +23,16 @@ Tests are not an afterthought — they are a core design tool. Always follow thi
 3. **Implement to pass the tests:** Write the minimum concrete code needed to satisfy the test suite.
 
 This ensures that every component is testable by design, contracts are explicit and well-understood, and regressions are caught immediately.
+
+### SOLID Principles
+
+All designs must be decoupled, interface-based, and extensible. Do NOT over-engineer.
+
+- **S — Single Responsibility:** One class, one job. Keep each class and method concise and focused.
+- **O — Open/Closed:** Add new behavior via new classes or modules, not by modifying existing ones.
+- **L — Liskov Substitution:** Subclasses must be drop-in replacements for their parent type.
+- **I — Interface Segregation:** Keep interfaces small and focused. Clients should not depend on methods they do not use.
+- **D — Dependency Inversion:** Depend on abstractions (interfaces/protocols), inject concrete implementations.
 
 ### Domain-Driven Naming
 
