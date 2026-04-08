@@ -1,9 +1,9 @@
 package com.rover;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Converts a command string into an ordered list of {@link Action} objects.
@@ -13,7 +13,7 @@ import java.util.Map;
  */
 public class ActionParser {
 
-    private final Map<Character, Action> registry = new HashMap<>();
+    private final Map<Character, Action> registry = new ConcurrentHashMap<>();
 
     /** Creates a parser pre-loaded with the default actions (L, R, M). */
     public ActionParser() {
