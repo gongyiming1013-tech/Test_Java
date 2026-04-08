@@ -14,24 +14,43 @@ import java.util.concurrent.atomic.AtomicReference;
  *       guaranteeing each action executes exactly once (safe for actions
  *       with side effects).</li>
  * </ul>
+ *
+ * <p>V2: Supports optional {@link Environment} for move validation and
+ * {@link ConflictPolicy} for handling blocked moves.</p>
  */
 public class Rover {
 
     private final AtomicReference<RoverState> state;
+    private final Environment environment;
+    private final ConflictPolicy conflictPolicy;
 
-    /** Creates a rover at the origin facing North. */
+    /** Creates a rover at the origin facing North, no constraints. */
     public Rover() {
         this(new Position(0, 0), Direction.NORTH);
     }
 
     /**
-     * Creates a rover with the given initial state.
+     * Creates a rover with the given initial state, no constraints.
      *
      * @param position  starting position
      * @param direction starting direction
      */
     public Rover(Position position, Direction direction) {
+        this(position, direction, new UnboundedEnvironment(), ConflictPolicy.FAIL);
+    }
+
+    /**
+     * Creates a rover with the given initial state, environment, and conflict policy.
+     *
+     * @param position       starting position
+     * @param direction      starting direction
+     * @param environment    environment for move validation
+     * @param conflictPolicy how to handle blocked moves
+     */
+    public Rover(Position position, Direction direction, Environment environment, ConflictPolicy conflictPolicy) {
         this.state = new AtomicReference<>(new RoverState(position, direction));
+        this.environment = environment;
+        this.conflictPolicy = conflictPolicy;
     }
 
     /**
@@ -41,23 +60,21 @@ public class Rover {
      * contention — critical for actions that may have side effects.</p>
      *
      * @param action the action to execute
+     * @throws MoveBlockedException if the move is blocked and conflict policy is FAIL
      */
     public synchronized void execute(Action action) {
-        RoverState current = state.get();
-        RoverState next = action.execute(current.position(), current.direction());
-        state.set(next);
+        executeOne(action);
     }
 
     /**
      * Executes a sequence of actions in order.
      *
      * @param actions the actions to execute
+     * @throws MoveBlockedException if a move is blocked and conflict policy is FAIL (aborts remaining actions)
      */
     public synchronized void execute(List<Action> actions) {
         for (Action action : actions) {
-            RoverState current = state.get();
-            RoverState next = action.execute(current.position(), current.direction());
-            state.set(next);
+            executeOne(action);
         }
     }
 
@@ -79,5 +96,29 @@ public class Rover {
     /** Returns the current facing direction (lock-free read). */
     public Direction getDirection() {
         return state.get().direction();
+    }
+
+    private void executeOne(Action action) {
+        RoverState current = state.get();
+        RoverState next = action.execute(current.position(), current.direction());
+
+        // Only validate if position changed (turns don't need validation)
+        if (!next.position().equals(current.position())) {
+            MoveResult result = environment.validate(current.position(), next.position());
+            if (result.blocked()) {
+                switch (conflictPolicy) {
+                    case FAIL -> throw new MoveBlockedException(next.position(),
+                            "move blocked at " + next.position().x() + "," + next.position().y());
+                    case SKIP -> { return; }
+                    case REVERSE -> {
+                        state.set(new RoverState(current.position(), current.direction().reverse()));
+                        return;
+                    }
+                }
+            }
+            state.set(new RoverState(result.position(), next.direction()));
+        } else {
+            state.set(next);
+        }
     }
 }

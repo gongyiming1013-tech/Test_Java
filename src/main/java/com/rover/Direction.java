@@ -50,4 +50,14 @@ public enum Direction {
         Direction[] values = values();
         return values[(ordinal() + 1) % 4];
     }
+
+    /**
+     * Returns the opposite direction (180° rotation).
+     *
+     * @return the reversed direction
+     */
+    public Direction reverse() {
+        Direction[] values = values();
+        return values[(ordinal() + 2) % 4];
+    }
 }
