@@ -9,7 +9,7 @@ import java.util.Set;
  *
  * <p>Accepts a command string and optional flags for grid constraints:</p>
  * <pre>
- *   java -jar rover.jar [--grid WxH] [--wrap] [--obstacles "x1,y1;x2,y2"] [--on-conflict fail|skip|reverse] "COMMANDS"
+ *   java -jar rover.jar [--grid WxH] [--wrap] [--obstacles "x1,y1;x2,y2"] [--on-conflict fail|skip|reverse] [--visual] [--delay ms] "COMMANDS"
  * </pre>
  */
 public class App {
@@ -56,6 +56,8 @@ public class App {
         boolean wrap = false;
         String obstaclesSpec = null;
         ConflictPolicy conflictPolicy = ConflictPolicy.FAIL;
+        boolean visual = false;
+        long delayMs = 500;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -63,12 +65,50 @@ public class App {
                 case "--wrap" -> wrap = true;
                 case "--obstacles" -> obstaclesSpec = args[++i];
                 case "--on-conflict" -> conflictPolicy = ConflictPolicy.valueOf(args[++i].toUpperCase());
+                case "--visual" -> visual = true;
+                case "--delay" -> delayMs = Long.parseLong(args[++i]);
                 default -> commands = args[i];
             }
         }
 
-        String result = run(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy);
-        System.out.println(result);
+        if (visual) {
+            runVisual(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy, delayMs);
+        } else {
+            String result = run(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy);
+            System.out.println(result);
+        }
+    }
+
+    private static void runVisual(String commands, String gridSpec, boolean wrap,
+                                  String obstaclesSpec, ConflictPolicy conflictPolicy, long delayMs) {
+        Environment environment = buildEnvironment(gridSpec, wrap, obstaclesSpec);
+        ActionParser parser = new ActionParser();
+        List<Action> actions = parser.parse(commands);
+
+        Rover rover = new Rover(new Position(0, 0), Direction.NORTH, environment, conflictPolicy);
+
+        int viewWidth;
+        int viewHeight;
+        Set<Position> obstacleSet;
+        if (environment instanceof GridEnvironment ge) {
+            viewWidth = ge.getWidth();
+            viewHeight = ge.getHeight();
+            obstacleSet = ge.getObstacles();
+        } else {
+            viewWidth = 20;
+            viewHeight = 20;
+            obstacleSet = Set.of();
+        }
+
+        TerminalRenderer renderer = new TerminalRenderer(viewWidth, viewHeight, obstacleSet);
+        rover.addListener(renderer);
+
+        StepExecutor executor = new StepExecutor(rover, delayMs);
+        try {
+            executor.execute(actions);
+        } catch (MoveBlockedException e) {
+            System.out.println("Execution stopped: " + e.getMessage());
+        }
     }
 
     private static Environment buildEnvironment(String gridSpec, boolean wrap, String obstaclesSpec) {
