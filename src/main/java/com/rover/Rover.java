@@ -1,17 +1,23 @@
 package com.rover;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * A rover that navigates a 2D plane by executing {@link Action} objects.
  *
- * <p>State is updated immutably through actions — each action returns
- * a new {@link RoverState} that the rover adopts.</p>
+ * <p>Thread-safety strategy (hybrid):
+ * <ul>
+ *   <li><strong>Reads</strong> — lock-free via {@link AtomicReference#get()},
+ *       safe for high-throughput concurrent observers.</li>
+ *   <li><strong>Writes</strong> — {@code synchronized} on this instance,
+ *       guaranteeing each action executes exactly once (safe for actions
+ *       with side effects).</li>
+ * </ul>
  */
 public class Rover {
 
-    private Position position;
-    private Direction direction;
+    private final AtomicReference<RoverState> state;
 
     /** Creates a rover at the origin facing North. */
     public Rover() {
@@ -25,19 +31,21 @@ public class Rover {
      * @param direction starting direction
      */
     public Rover(Position position, Direction direction) {
-        this.position = position;
-        this.direction = direction;
+        this.state = new AtomicReference<>(new RoverState(position, direction));
     }
 
     /**
      * Executes a single action, updating this rover's state.
      *
+     * <p>Synchronized to ensure the action runs exactly once, even under
+     * contention — critical for actions that may have side effects.</p>
+     *
      * @param action the action to execute
      */
-    public void execute(Action action) {
-        RoverState newState = action.execute(position, direction);
-        this.position = newState.position();
-        this.direction = newState.direction();
+    public synchronized void execute(Action action) {
+        RoverState current = state.get();
+        RoverState next = action.execute(current.position(), current.direction());
+        state.set(next);
     }
 
     /**
@@ -45,19 +53,31 @@ public class Rover {
      *
      * @param actions the actions to execute
      */
-    public void execute(List<Action> actions) {
+    public synchronized void execute(List<Action> actions) {
         for (Action action : actions) {
-            execute(action);
+            RoverState current = state.get();
+            RoverState next = action.execute(current.position(), current.direction());
+            state.set(next);
         }
     }
 
-    /** Returns the current position. */
-    public Position getPosition() {
-        return position;
+    /**
+     * Returns an immutable snapshot of the rover's current state.
+     * Lock-free — safe for concurrent readers.
+     *
+     * @return current state snapshot
+     */
+    public RoverState getState() {
+        return state.get();
     }
 
-    /** Returns the current facing direction. */
+    /** Returns the current position (lock-free read). */
+    public Position getPosition() {
+        return state.get().position();
+    }
+
+    /** Returns the current facing direction (lock-free read). */
     public Direction getDirection() {
-        return direction;
+        return state.get().direction();
     }
 }
