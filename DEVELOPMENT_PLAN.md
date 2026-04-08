@@ -2,12 +2,15 @@
 
 ## Overview
 
-CLI system controlling a robotic rover on a 2D grid. Rover starts at (0,0) facing North.
-Commands: L (turn left 90°), R (turn right 90°), M (move forward). Output: `"x:y"`.
+A CLI system for controlling a robotic rover navigating a 2D grid. The rover starts at position (0,0) facing North and accepts commands: L (turn left 90°), R (turn right 90°), M (move forward). Output is the final position as `"x:y"`.
+
+**Goals:** Build a production-ready, extensible rover control system that supports concurrent access, geographic constraints, multiple rovers, and eventually a real-time visual interface. The design prioritizes extensibility (new commands and behaviors added without modifying existing code) and thread safety for multi-user production environments.
 
 ## Design
 
 ### V0 + V1 (Current)
+
+**Goal:** Build a single rover on an infinite plane with basic commands (L, R, M), then make it thread-safe for production multi-user concurrent access.
 
 #### Architecture
 
@@ -35,11 +38,13 @@ App (CLI entry point)
 | **Immutable Value Object** | `Position` (record), `RoverState` (record) | Thread-safe state snapshots, no defensive copying needed |
 | **Registry** | `ActionParser.registry` (`ConcurrentHashMap`) | Decouples command parsing from action creation; supports runtime registration |
 
-#### V1 Concurrency Strategy: Hybrid `AtomicReference` + `synchronized`
+#### Strategy Comparisons
+
+**V1 Concurrency — Hybrid `AtomicReference` + `synchronized`**
 
 **Problem:** `Rover` has two mutable fields (`position`, `direction`) updated non-atomically. Under concurrent access, readers can observe inconsistent state (e.g., new position + old direction).
 
-**Approach:** Combine lock-free reads with mutually exclusive writes.
+**Chosen approach:** Combine lock-free reads with mutually exclusive writes.
 
 | Operation | Mechanism | Rationale |
 |-----------|-----------|-----------|
@@ -128,9 +133,21 @@ Thrown when `ActionParser.parse()` encounters an unregistered command character.
 | `run` | `static String run(String commands)` | Parses + executes commands, returns `"x:y"` |
 | `main` | `static void main(String[] args)` | CLI wrapper around `run()` |
 
+#### Test Plan
+
+| Dimension | Covers | Key Scenarios |
+|-----------|--------|---------------|
+| Core functionality | Single action execution, sequence execution, full path traversal | Turn left/right, move forward, multi-step paths (MMRMM, MRMRMRMR square) |
+| Edge cases | Empty/null input, custom initial state | Empty command string, null commands, rover starting at non-origin position |
+| Error handling | Invalid command characters | Unregistered character at various positions in command string |
+| Concurrency | Multi-thread write correctness, read/write consistency, parser thread safety | 16 threads × 1000 concurrent moves, concurrent readers during writes, concurrent register + parse on ActionParser |
+| Integration | End-to-end CLI flow | `App.run()` produces correct `"x:y"` output for compound command strings |
+
 ---
 
 ### V2 — Geographic Constraints (Planned)
+
+**Goal:** Constrain the rover to a finite grid with boundaries and obstacles, requiring move validation before state transitions.
 
 _To be completed before V2 implementation begins._
 
@@ -153,17 +170,40 @@ _To be completed before V2 implementation begins._
 
 _New and modified classes to be documented here._
 
+#### Test Plan
+
+| Dimension | Covers | Key Scenarios |
+|-----------|--------|---------------|
+| Boundary enforcement | _TBD_ | _e.g., move at grid edge, move beyond boundary_ |
+| Obstacle handling | _TBD_ | _e.g., move into obstacle, obstacle at start position_ |
+| Constraint + existing actions | _TBD_ | _e.g., sequences mixing turns and blocked moves_ |
+| Error handling | _TBD_ | _e.g., invalid grid dimensions, obstacle outside grid_ |
+
 ---
 
-### V3–V5 (Planned)
+### V3 — Additional Commands (Planned)
 
-_Design sections to be added when each version enters planning._
+**Goal:** Expand the action set beyond L/R/M to support richer rover behaviors.
+
+_Design to be added when this version enters planning._
+
+### V4 — Multi-Rover Control (Planned)
+
+**Goal:** Support multiple rovers operating concurrently on the same grid with collision awareness.
+
+_Design to be added when this version enters planning._
+
+### V5 — Real-Time UI (Planned)
+
+**Goal:** Provide a visual interface for real-time observation and interactive control of rover movement.
+
+_Design to be added when this version enters planning._
 
 ## Roadmap & Implementation
 
 ### V0 (MVP) — Completed
 
-**Goal:** Single rover on an infinite plane with basic commands.
+**Scope:** Implement a single rover navigating an infinite 2D plane with three basic commands (L, R, M). Establish the core domain model with Strategy pattern for extensible actions, immutable state via records, and registry-based command parsing. Full TDD with 95%+ branch coverage.
 
 - [x] `Direction` enum (leaf — no deps)
 - [x] `Position` record (depends on Direction)
@@ -176,7 +216,7 @@ _Design sections to be added when each version enters planning._
 
 ### V1 — Concurrency — Completed
 
-**Goal:** Thread-safe Rover for production multi-user scenarios. See [Design > V0 + V1](#v0--v1-current) for strategy details.
+**Scope:** Make Rover and ActionParser thread-safe for production multi-user scenarios. Adopt a hybrid concurrency strategy — `AtomicReference` for lock-free reads, `synchronized` for exclusive writes — to balance read throughput with safe action execution. See [Design > V0 + V1](#v0--v1-current) for strategy details.
 
 - [x] Refactor `Rover`: merge `position` + `direction` into `AtomicReference<RoverState>`
 - [x] `execute()` methods add `synchronized` — action executes exactly once
@@ -189,7 +229,7 @@ _Design sections to be added when each version enters planning._
 
 ### V2 — Geographic Constraints
 
-**Goal:** Finite grid with boundaries and obstacles.
+**Scope:** Introduce a finite grid with defined width and height so the rover cannot move beyond edges. Support obstacles on specific cells that block movement. Define and implement a constraint violation strategy (e.g., ignore move, throw exception, or find alternative path).
 
 - [ ] Grid boundaries: introduce a finite grid (`width × height`); rover cannot move beyond edges
 - [ ] Obstacles: certain cells are impassable; rover must detect and handle blocked moves
@@ -199,7 +239,7 @@ _Design sections to be added when each version enters planning._
 
 ### V3 — Additional Commands
 
-**Goal:** Expand the action set beyond L/R/M.
+**Scope:** Expand the action set beyond L/R/M to support richer rover behaviors (e.g., backward move, jump, U-turn). Leverage the existing Strategy pattern and ActionParser registry so new commands are added without modifying existing code.
 
 - [ ] New actions (e.g., backward move, jump, U-turn — TBD)
 - [ ] Leverage existing Strategy pattern + `ActionParser` registry for zero-modification extensibility
@@ -208,7 +248,7 @@ _Design sections to be added when each version enters planning._
 
 ### V4 — Multi-Rover Control
 
-**Goal:** Multiple rovers operating on the same plane.
+**Scope:** Support multiple rovers operating concurrently on the same grid. Introduce a rover registry for fleet management and implement collision detection and coordination between rovers.
 
 - [ ] Rover registry / fleet management
 - [ ] Collision detection and coordination between rovers
@@ -217,7 +257,7 @@ _Design sections to be added when each version enters planning._
 
 ### V5 — Real-Time UI
 
-**Goal:** Visual interface for live rover observation.
+**Scope:** Provide a visual interface that renders rover position and movement in real time, replacing text-only coordinate output. Include live action execution rendering and an interactive control panel.
 
 - [ ] Visual interface showing rover position and movement in real time
 - [ ] Live rendering of action execution (not just final coordinates)

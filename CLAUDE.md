@@ -91,12 +91,14 @@ Analyze the requirements and produce the **Overview** and **Design** sections of
 
 2. **Design** (maps to the **Design** section in `DEVELOPMENT_PLAN.md`, organized by version)
    - Each completed version must include:
+     - **Goal** — one sentence summarizing the version's objective.
      - **Architecture** — diagram showing component relationships and data flow.
      - **Design Patterns** — table of patterns used, where, and why.
      - **Strategy Comparisons** (if applicable) — table of alternatives considered with pros, cons, and verdict.
      - **Class & Data Structure Reference** — every class, interface, record, and enum with fields, method signatures, and thread-safety annotations.
      - **Test Plan** — table listing test dimensions, what each dimension covers, and key scenarios. Example dimensions: core functionality, edge cases, error handling, concurrency, performance.
    - Each planned version must include:
+     - **Goal** — one sentence summarizing the version's objective.
      - **Strategy Comparison** — placeholder for candidate approaches and trade-offs.
      - **Design Discussion** — open questions to resolve before implementation.
      - **Class & Data Structure Changes** — placeholder for new and modified types.
@@ -110,7 +112,7 @@ Produce the **Roadmap & Implementation** section of `DEVELOPMENT_PLAN.md`. This 
 - **V1+ (Enrichment):** Incremental enhancements (e.g., concurrency, advanced constraints, persistence).
 
 Each version subsection must contain:
-- **Goal** — one sentence describing the version's objective.
+- **Scope** — a short paragraph describing the version's objective and approach in slightly more detail than the Goal in Design.
 - **Checklist** — specific, actionable items covering feature scope and implementation steps. Use `[x]` for completed items, `[ ]` for pending items. Each version should end with a coverage verification item.
 
 After completing Phase A and Phase B, the `DEVELOPMENT_PLAN.md` is ready for review. **STOP and ask the user to review and confirm the plan** before proceeding to Phase C.
