@@ -147,37 +147,152 @@ Thrown when `ActionParser.parse()` encounters an unregistered command character.
 
 ### V2 — Geographic Constraints (Planned)
 
-**Goal:** Constrain the rover to a finite grid with boundaries and obstacles, requiring move validation before state transitions.
-
-_To be completed before V2 implementation begins._
+**Goal:** Allow users to optionally constrain the rover to a finite grid with boundaries and obstacles. Default behavior (no constraints) remains identical to V1.
 
 #### Strategy Comparison
 
-| Approach | Description | Trade-offs |
-|----------|-------------|------------|
-| _TBD_ | _e.g., Grid as a parameter to Rover_ | _..._ |
-| _TBD_ | _e.g., Grid as a separate validator_ | _..._ |
-| _TBD_ | _e.g., Obstacle strategy pattern_ | _..._ |
+**Where to enforce constraints?**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| Inside `Action.execute()` | Each action checks constraints before computing new state | Constraint logic co-located with movement | Violates SRP — actions shouldn't know about environment; every action must duplicate validation logic | Rejected |
+| Inside `Rover.execute()` | Rover validates the new position after action computes it, before committing state | Centralized, single validation point; actions stay pure | Rover gains extra responsibility; but it's the state owner so this is natural | **Adopted** |
+| Separate `MoveValidator` | External validator wraps action execution | Maximum decoupling | Over-engineered for current scope; adds indirection without clear benefit | Rejected |
+
+**How to handle conflicts (boundary violations & obstacle collisions)?**
+
+Three conflict resolution policies, applied uniformly to both boundary violations and obstacle collisions:
+
+| Policy | CLI Flag | Behavior | Use Case |
+|--------|----------|----------|----------|
+| **FAIL** (default) | `--on-conflict fail` or omit | Rover stays put; throws `MoveBlockedException`; entire command sequence aborts | Safety-critical — caller must know something went wrong |
+| **SKIP** | `--on-conflict skip` | Rover stays put; silently skips the blocked move; continues executing remaining commands | Fault-tolerant — rover does its best to complete the sequence |
+| **REVERSE** | `--on-conflict reverse` | Rover turns 180° (reverses direction) instead of moving into the blocked cell; continues executing remaining commands | Autonomous exploration — rover bounces off walls and obstacles |
+
+**Boundary mode** (orthogonal to conflict policy):
+
+| Mode | CLI Flag | Behavior |
+|------|----------|----------|
+| **Bounded** (default) | `--grid WxH` without `--wrap` | Grid has hard edges; moving beyond triggers conflict policy |
+| **Wrap** (toroidal) | `--grid WxH --wrap` | Position wraps to opposite edge; no conflict triggered for boundaries (obstacles still trigger conflict policy) |
 
 #### Design Discussion
 
-- **Grid representation:** How to model the finite grid? (e.g., `Grid` class with width/height, or `Boundary` interface)
-- **Obstacle storage:** Data structure for obstacle positions (e.g., `Set<Position>`, spatial index)
-- **Constraint enforcement:** Where in the execution flow to check constraints? (inside `Action.execute()`, in `Rover.execute()`, or via a separate `MoveValidator`)
-- **Violation behavior:** What happens when a move is blocked? (ignore silently, throw exception, return blocked status)
+- **Backward compatibility:** `Environment` is optional. `Rover()` and `Rover(position, direction)` constructors remain unchanged and behave as V1 (no constraints). New constructor `Rover(position, direction, environment)` enables constraints.
+- **Grid coordinate system:** Grid spans `(0,0)` to `(width-1, height-1)`. Position `(0,0)` is bottom-left corner.
+- **Obstacle placement validation:** Obstacles must be within grid bounds. Placing an obstacle at the rover's start position is allowed (user error) but will block the first move.
+- **Turn actions unaffected:** L and R don't change position, so they never trigger constraint validation. Only `MoveForwardAction` (and future movement actions) can be blocked.
+- **CLI input design:**
+  ```
+  # No constraints (V1 compatible)
+  java -jar rover.jar "MMRMM"
+
+  # Grid with default conflict policy (FAIL)
+  java -jar rover.jar --grid 10x10 "MMRMM"
+
+  # Grid + wrap-around (boundaries wrap, obstacles still trigger conflict policy)
+  java -jar rover.jar --grid 10x10 --wrap "MMRMM"
+
+  # Grid + skip on conflict (blocked moves are silently skipped)
+  java -jar rover.jar --grid 10x10 --on-conflict skip "MMRMM"
+
+  # Grid + reverse on conflict (rover turns 180° at walls/obstacles)
+  java -jar rover.jar --grid 10x10 --on-conflict reverse "MMRMM"
+
+  # Grid + wrap + obstacles + skip
+  java -jar rover.jar --grid 10x10 --wrap --obstacles "1,2;3,4" --on-conflict skip "MMRMM"
+  ```
+  All flags are optional. `--obstacles` requires `--grid`. `--on-conflict` defaults to `fail`. `--wrap` only affects boundary handling (obstacles always trigger the conflict policy).
 
 #### Class & Data Structure Changes
 
-_New and modified classes to be documented here._
+##### `ConflictPolicy` — Enum (New)
+Defines how the rover reacts when a move is blocked (by boundary or obstacle).
+
+| Constant | Behavior |
+|----------|----------|
+| `FAIL`   | Rover stays put; throws `MoveBlockedException`; command sequence aborts |
+| `SKIP`   | Rover stays put; move silently skipped; continues remaining commands |
+| `REVERSE`| Rover turns 180° (direction reverses); stays at current position; continues remaining commands |
+
+##### `BoundaryMode` — Enum (New)
+Defines how grid edges are treated.
+
+| Constant | Behavior |
+|----------|----------|
+| `BOUNDED` | Moving beyond edge triggers the `ConflictPolicy` |
+| `WRAP`    | Position wraps to opposite edge (toroidal); no conflict triggered |
+
+##### `Environment` — Interface (New)
+Contract for move validation. Decouples constraint logic from Rover.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `validate` | `MoveResult validate(Position current, Position proposed)` | Returns `MoveResult` indicating the accepted position and whether a conflict occurred |
+
+##### `MoveResult` — Record (New)
+Result of an environment validation check.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `position` | `Position` | The accepted position (original if no conflict, wrapped if WRAP mode) |
+| `blocked` | `boolean` | `true` if the move was blocked (boundary in BOUNDED mode, or obstacle) |
+
+##### `UnboundedEnvironment` — Class implements `Environment` (New)
+No constraints. Always returns `MoveResult(proposed, false)`. Used as default when no grid is specified.
+
+##### `GridEnvironment` — Class implements `Environment` (New)
+Finite grid with optional obstacles and configurable boundary mode.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `width` | `int` | Grid width (x range: 0 to width-1) |
+| `height` | `int` | Grid height (y range: 0 to height-1) |
+| `obstacles` | `Set<Position>` | Immutable set of blocked positions |
+| `boundaryMode` | `BoundaryMode` | How grid edges are treated |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `validate` | `MoveResult validate(Position current, Position proposed)` | Checks obstacle → checks bounds (wrap or block) → returns `MoveResult` |
+
+##### `MoveBlockedException` — Class extends `RuntimeException` (New)
+Thrown when `ConflictPolicy.FAIL` is active and a move is blocked. Includes the blocked position and reason (boundary or obstacle).
+
+##### `Rover` — Modified
+Add optional `Environment` and `ConflictPolicy` support.
+
+| Change | Detail |
+|--------|--------|
+| New fields | `private final Environment environment`, `private final ConflictPolicy conflictPolicy` |
+| New constructor | `Rover(Position, Direction, Environment, ConflictPolicy)` |
+| Modified `execute()` | After action computes new position: (1) call `environment.validate()`, (2) if blocked, apply `ConflictPolicy` — FAIL: throw; SKIP: keep current state; REVERSE: flip direction |
+| Existing constructors | Unchanged — default to `UnboundedEnvironment` + `ConflictPolicy.FAIL` |
+
+##### `App` — Modified
+Parse new CLI flags and construct appropriate `Environment` and `ConflictPolicy`.
+
+| Flag | Format | Description |
+|------|--------|-------------|
+| `--grid` | `WxH` (e.g., `10x10`) | Enable finite grid with given dimensions |
+| `--wrap` | (no value) | Use `BoundaryMode.WRAP` instead of `BOUNDED` |
+| `--obstacles` | `"x1,y1;x2,y2;..."` | Semicolon-separated obstacle positions |
+| `--on-conflict` | `fail` / `skip` / `reverse` | Conflict resolution policy (default: `fail`) |
 
 #### Test Plan
 
 | Dimension | Covers | Key Scenarios |
 |-----------|--------|---------------|
-| Boundary enforcement | _TBD_ | _e.g., move at grid edge, move beyond boundary_ |
-| Obstacle handling | _TBD_ | _e.g., move into obstacle, obstacle at start position_ |
-| Constraint + existing actions | _TBD_ | _e.g., sequences mixing turns and blocked moves_ |
-| Error handling | _TBD_ | _e.g., invalid grid dimensions, obstacle outside grid_ |
+| Boundary — BOUNDED | Rover blocked at grid edge | Move north at top edge, move east at right edge, move at corner (two edges), interior moves unaffected |
+| Boundary — WRAP | Toroidal wrap-around | Wrap north→south, wrap east→west, wrap at corner, full traversal wrapping multiple times |
+| Obstacles | Blocked by obstacle | Move into obstacle, obstacle adjacent but not in path, multiple obstacles, obstacle at (0,0) |
+| ConflictPolicy — FAIL | Sequence aborts on conflict | `MMMM` where 3rd move hits wall → exception, only first 2 moves committed |
+| ConflictPolicy — SKIP | Blocked move skipped, rest continues | `MMMM` where 3rd move hits wall → skipped, 4th move also hits wall → skipped, turns still execute |
+| ConflictPolicy — REVERSE | Rover flips direction on conflict | Move into wall → direction reverses + stays put, next M goes opposite way; move into obstacle → same |
+| WRAP + obstacle + SKIP | Boundaries wrap but obstacles skip | Wrap at edge works, obstacle in path skipped, rest continues |
+| Default / backward compat | No environment = V1 behavior | All V0/V1 tests pass unchanged with default constructors |
+| Error handling | Invalid configuration | Zero/negative grid dimensions, obstacle outside grid bounds, invalid `--on-conflict` value |
+| CLI integration | End-to-end with all flags | `--grid 5x5 "MMMMMM"`, `--grid 3x3 --wrap`, `--on-conflict skip`, `--obstacles` parsing, flag combinations |
+| Concurrency | Thread safety with environment | Concurrent moves on bounded grid, concurrent reads during blocked moves, concurrent SKIP/REVERSE |
 
 ---
 
@@ -229,13 +344,19 @@ _Design to be added when this version enters planning._
 
 ### V2 — Geographic Constraints
 
-**Scope:** Introduce a finite grid with defined width and height so the rover cannot move beyond edges. Support obstacles on specific cells that block movement. Define and implement a constraint violation strategy (e.g., ignore move, throw exception, or find alternative path).
+**Scope:** Allow users to optionally specify a finite grid (`width × height`), obstacle positions, boundary mode (bounded or wrap), and conflict resolution policy (fail, skip, or reverse). Rover validates moves against environment constraints before committing state. All constraints are optional — omitting them preserves V1 behavior (infinite plane, no obstacles). CLI extended with `--grid`, `--wrap`, `--obstacles`, and `--on-conflict` flags.
 
-- [ ] Grid boundaries: introduce a finite grid (`width × height`); rover cannot move beyond edges
-- [ ] Obstacles: certain cells are impassable; rover must detect and handle blocked moves
-- [ ] Constraint violation strategy: define how rover reacts (ignore move, throw exception, or find alternative path)
-- [ ] Test suite for boundary and obstacle scenarios
-- [ ] Coverage verification
+- [ ] `ConflictPolicy` enum (`FAIL`, `SKIP`, `REVERSE`)
+- [ ] `BoundaryMode` enum (`BOUNDED`, `WRAP`)
+- [ ] `MoveResult` record (`Position position`, `boolean blocked`)
+- [ ] `Environment` interface with `MoveResult validate(Position current, Position proposed)` method
+- [ ] `UnboundedEnvironment` — no constraints, default for backward compatibility
+- [ ] `GridEnvironment` — finite grid with width/height, `Set<Position>` obstacles, configurable `BoundaryMode`
+- [ ] `MoveBlockedException` — thrown when `ConflictPolicy.FAIL` is active and move is blocked
+- [ ] Modify `Rover` — add optional `Environment` + `ConflictPolicy` fields; apply policy in `execute()` when move is blocked
+- [ ] Modify `App` — parse `--grid`, `--wrap`, `--obstacles`, `--on-conflict` CLI flags
+- [ ] Test suite: boundary BOUNDED/WRAP, obstacles, three conflict policies (FAIL/SKIP/REVERSE), backward compatibility, mixed sequences, error handling, CLI integration, concurrency
+- [ ] Coverage verification (maintain 95%+ branch coverage)
 
 ### V3 — Additional Commands
 
