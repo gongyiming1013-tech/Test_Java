@@ -7,10 +7,105 @@ Commands: L (turn left 90°), R (turn right 90°), M (move forward). Output: `"x
 
 ## Design
 
-- **Strategy pattern** for extensible actions via `Action` interface
-- **Immutable state** via Java 17 records (`Position`, `RoverState`)
-- **Registry-based parser** (`ActionParser`) using `Map<Character, Action>`
-- **Domain exception** (`InvalidActionException`) for illegal input
+### Architecture
+
+```
+App (CLI entry point)
+ └─ ActionParser  ──parse──▶  List<Action>
+       │                          │
+       │ registry                 │ execute
+       ▼                          ▼
+  ConcurrentHashMap         Rover (synchronized writes / lock-free reads)
+  { 'L' → TurnLeftAction,      │
+    'R' → TurnRightAction,     │ AtomicReference<RoverState>
+    'M' → MoveForwardAction }  │
+                                ▼
+                          RoverState (immutable snapshot)
+                           ├─ Position (x, y)
+                           └─ Direction (NORTH/EAST/SOUTH/WEST)
+```
+
+### Design Patterns
+
+| Pattern | Where | Purpose |
+|---------|-------|---------|
+| **Strategy** | `Action` interface + concrete actions | Extensible command execution — new actions added without modifying `Rover` or `ActionParser` |
+| **Immutable Value Object** | `Position` (record), `RoverState` (record) | Thread-safe state snapshots, no defensive copying needed |
+| **Registry** | `ActionParser.registry` (`ConcurrentHashMap`) | Decouples command parsing from action creation; supports runtime registration |
+
+### Class & Data Structure Reference
+
+#### `Direction` — Enum
+Cardinal directions with embedded movement vectors and rotation logic.
+
+| Constant | `dx` | `dy` | `turnLeft()` | `turnRight()` |
+|----------|------|------|---------------|----------------|
+| `NORTH`  | 0    | 1    | `WEST`        | `EAST`         |
+| `EAST`   | 1    | 0    | `NORTH`       | `SOUTH`        |
+| `SOUTH`  | 0    | -1   | `EAST`        | `WEST`         |
+| `WEST`   | -1   | 0    | `SOUTH`       | `NORTH`        |
+
+#### `Position` — Record `(int x, int y)`
+Immutable 2D coordinate on an infinite plane.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `move` | `Position move(Direction d)` | Returns new position offset by `(d.dx(), d.dy())` |
+
+#### `RoverState` — Record `(Position position, Direction direction)`
+Immutable snapshot coupling position and direction. Used as the atomic unit of state inside `Rover` and as the return type of `Action.execute()`.
+
+#### `Action` — Interface (Strategy)
+Contract for all rover commands.
+
+| Method | Signature |
+|--------|-----------|
+| `execute` | `RoverState execute(Position position, Direction direction)` |
+
+**Implementations:**
+
+| Class | Command | Behavior |
+|-------|---------|----------|
+| `TurnLeftAction`    | `L` | Rotates direction 90° counter-clockwise, position unchanged |
+| `TurnRightAction`   | `R` | Rotates direction 90° clockwise, position unchanged |
+| `MoveForwardAction` | `M` | Advances one step in current direction, direction unchanged |
+
+#### `ActionParser` — Class
+Converts command strings into ordered `List<Action>`.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `registry` | `ConcurrentHashMap<Character, Action>` | Thread-safe command → action mapping |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `register` | `void register(char, Action)` | Adds/overrides a command binding at runtime |
+| `parse` | `List<Action> parse(String)` | Translates command string; throws `InvalidActionException` on unknown char |
+
+#### `Rover` — Class (Thread-Safe)
+Core domain object. Maintains mutable state via `AtomicReference<RoverState>`.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `state` | `AtomicReference<RoverState>` | Single source of truth, enables lock-free reads |
+
+| Method | Signature | Thread Safety | Description |
+|--------|-----------|---------------|-------------|
+| `execute` | `synchronized void execute(Action)` | Exclusive write | Executes one action, updates state atomically |
+| `execute` | `synchronized void execute(List<Action>)` | Exclusive write | Batch execution, entire sequence under one lock |
+| `getState` | `RoverState getState()` | Lock-free read | Returns immutable snapshot |
+| `getPosition` | `Position getPosition()` | Lock-free read | Delegates to `state.get().position()` |
+| `getDirection` | `Direction getDirection()` | Lock-free read | Delegates to `state.get().direction()` |
+
+#### `InvalidActionException` — Class extends `IllegalArgumentException`
+Thrown when `ActionParser.parse()` encounters an unregistered command character. Message includes the character and its zero-based index.
+
+#### `App` — Class (CLI Entry Point)
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `run` | `static String run(String commands)` | Parses + executes commands, returns `"x:y"` |
+| `main` | `static void main(String[] args)` | CLI wrapper around `run()` |
 
 ## Roadmap
 
