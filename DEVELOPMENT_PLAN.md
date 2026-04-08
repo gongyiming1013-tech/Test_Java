@@ -308,11 +308,139 @@ _Design to be added when this version enters planning._
 
 _Design to be added when this version enters planning._
 
-### V5 — Real-Time UI (Planned)
+### V5 — Real-Time UI
 
-**Goal:** Provide a visual interface for real-time observation and interactive control of rover movement.
+**Goal:** Enable step-by-step visual observation of rover movement in real time, starting with a terminal-based renderer. Split into two phases: V5a (Observer + step execution engine) and V5b (Terminal renderer).
 
-_Design to be added when this version enters planning._
+#### Problem Analysis
+
+Current `Rover.execute(List<Action>)` runs all actions synchronously and only returns the final state. There is no way for external components to observe intermediate states. Real-time UI requires:
+1. **Per-step notification** — after each action, interested parties are informed of the state change.
+2. **Paced execution** — configurable delay between steps so humans can follow the animation.
+3. **Rendering** — visual representation of the grid, rover, path, and obstacles.
+
+#### Strategy Comparison
+
+**Notification mechanism:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| Polling (UI queries Rover in a loop) | UI thread periodically reads `getState()` | Simple | Misses steps if execution is fast; wastes CPU if idle | Rejected |
+| **Observer pattern** | Rover notifies registered listeners after each step | Push-based, no missed steps; clean decoupling | Slightly more complex; listener must not block execution | **Adopted** |
+| Event queue / message bus | Actions publish events to a shared queue | Maximum decoupling | Over-engineered for single-rover CLI | Rejected |
+
+**Paced execution:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| Sleep inside `Rover.execute()` | Add `Thread.sleep()` between actions in Rover | Simple | Pollutes domain class with timing concerns; blocks synchronized lock during sleep | Rejected |
+| **External StepExecutor** | Separate class feeds actions to Rover one at a time with configurable delay | Clean separation; Rover stays pure; delay is configurable | Extra class | **Adopted** |
+
+**UI technology (MVP):**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| **Terminal (ANSI)** | Character-based grid drawn with ANSI escape codes | Zero dependencies; works everywhere; fast to implement | Limited visual fidelity | **Adopted for MVP** |
+| Swing | JDK built-in GUI | Richer visuals | Heavier setup; not needed for MVP | Deferred |
+| JavaFX | Modern GUI framework | Best visuals and animation | External dependency; not needed for MVP | Deferred |
+
+#### Design Discussion
+
+- **Listener thread safety:** Listeners are notified inside `Rover`'s synchronized `execute()` block, guaranteeing they see a consistent state. Listeners must not block (rendering should be fast or buffered).
+- **StepExecutor threading:** Runs on a separate thread. Feeds one action at a time to Rover, then sleeps for the configured delay. The main thread can wait for completion or proceed.
+- **Terminal rendering approach:** Uses ANSI escape codes to clear screen and redraw the grid on each step. Shows rover with directional arrow (`▲ ▼ ◄ ►`), path trail (`·`), obstacles (`#`), and step info.
+- **`--visual` CLI flag:** Enables visual mode. Without it, behavior is unchanged (backward compatible). Visual mode implies a default step delay (e.g., 500ms) which can be overridden with `--delay <ms>`.
+- **Grid size inference:** In visual mode without `--grid`, a default viewport (e.g., 20x20 centered on origin) is used for unbounded environments.
+- **Layered architecture:** Observer and StepExecutor are pure backend (V5a) — no UI dependency. TerminalRenderer is a listener implementation (V5b). Future Swing/JavaFX renderers just implement the same listener interface.
+
+#### Class & Data Structure Changes
+
+##### V5a — Observer + Step Execution
+
+###### `RoverEvent` — Record (New)
+Immutable snapshot of a single step execution.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `previousState` | `RoverState` | State before the action |
+| `newState` | `RoverState` | State after the action |
+| `action` | `Action` | The action that was executed |
+| `stepIndex` | `int` | Zero-based index in the command sequence |
+| `totalSteps` | `int` | Total number of actions in the sequence |
+| `blocked` | `boolean` | Whether the move was blocked by environment |
+
+###### `RoverListener` — Interface (New)
+Observer contract for rover state changes.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `onStep` | `void onStep(RoverEvent event)` | Called after each action execution |
+| `onComplete` | `void onComplete(RoverState finalState)` | Called when the entire sequence finishes |
+
+###### `Rover` — Modified
+Add listener support.
+
+| Change | Detail |
+|--------|--------|
+| New field | `private final List<RoverListener> listeners` |
+| New method | `void addListener(RoverListener)` |
+| New method | `void removeListener(RoverListener)` |
+| Modified `executeOne()` | After state update, notify all listeners with `RoverEvent` |
+
+###### `StepExecutor` — Class (New)
+Executes actions one at a time with configurable delay.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `rover` | `Rover` | The rover to control |
+| `delayMs` | `long` | Milliseconds between steps |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `execute` | `void execute(List<Action> actions)` | Feeds actions to rover one by one with delay |
+| `executeAsync` | `Future<?> executeAsync(List<Action> actions)` | Same as above but on a background thread |
+
+##### V5b — Terminal Renderer
+
+###### `TerminalRenderer` — Class implements `RoverListener` (New)
+Draws the grid and rover state to the terminal using ANSI escape codes.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `width` | `int` | Viewport width in cells |
+| `height` | `int` | Viewport height in cells |
+| `obstacles` | `Set<Position>` | Obstacle positions to render |
+| `path` | `List<Position>` | Accumulated rover path trail |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `onStep` | `void onStep(RoverEvent event)` | Clears screen, redraws grid with updated rover position and path |
+| `onComplete` | `void onComplete(RoverState finalState)` | Renders final state with completion message |
+| `render` | `void render(RoverState state, int step, int total)` | Core rendering logic |
+
+**Rendering symbols:**
+
+| Symbol | Meaning |
+|--------|---------|
+| `▲` `▼` `◄` `►` | Rover facing N/S/W/E |
+| `·` | Path trail (visited cell) |
+| `#` | Obstacle |
+| `.` | Empty cell |
+
+###### `App` — Modified
+Add `--visual` and `--delay <ms>` CLI flags. When visual mode is active, use `StepExecutor` + `TerminalRenderer` instead of direct batch execution.
+
+#### Test Plan
+
+| Dimension | Covers | Key Scenarios |
+|-----------|--------|---------------|
+| Observer notification | Listener receives correct events | Single action, sequence, step index/total correct, blocked moves reported |
+| Listener lifecycle | Add/remove listeners | Add multiple listeners, remove mid-sequence, no listeners (no-op) |
+| StepExecutor timing | Actions executed with delay | Verify actions execute sequentially with approximate delay; async returns Future |
+| StepExecutor + conflict | Policies work through StepExecutor | FAIL aborts (listener gets onComplete after error), SKIP/REVERSE continue |
+| TerminalRenderer output | Correct grid rendering | Rover at various positions, directional arrows, path trail accumulation, obstacles rendered |
+| Backward compatibility | Non-visual mode unchanged | All V0–V2 tests pass; no `--visual` = same output as before |
+| CLI flags | `--visual` and `--delay` parsing | `--visual` alone, `--visual --delay 200`, `--visual` with grid/obstacles |
 
 ## Roadmap & Implementation
 
@@ -376,10 +504,23 @@ _Design to be added when this version enters planning._
 - [ ] Test suite for multi-rover scenarios
 - [ ] Coverage verification
 
-### V5 — Real-Time UI
+### V5a — Observer + Step Execution
 
-**Scope:** Provide a visual interface that renders rover position and movement in real time, replacing text-only coordinate output. Include live action execution rendering and an interactive control panel.
+**Scope:** Add Observer pattern to Rover so external components can observe each step of execution. Introduce `RoverListener` interface, `RoverEvent` record, and `StepExecutor` for paced action execution with configurable delay. This is the pure backend foundation — no UI dependency. All existing behavior remains backward compatible (no listeners = no overhead).
 
-- [ ] Visual interface showing rover position and movement in real time
-- [ ] Live rendering of action execution (not just final coordinates)
-- [ ] Interactive control panel
+- [ ] `RoverEvent` record (previousState, newState, action, stepIndex, totalSteps, blocked)
+- [ ] `RoverListener` interface (`onStep`, `onComplete`)
+- [ ] Modify `Rover`: add `listeners` list, `addListener()`, `removeListener()`, notify in `executeOne()`
+- [ ] `StepExecutor`: synchronous `execute()` with configurable delay, async `executeAsync()` on background thread
+- [ ] Test suite: observer notification, listener lifecycle, StepExecutor timing, conflict policy integration
+- [ ] Coverage verification (maintain 95%+ branch coverage)
+
+### V5b — Terminal Renderer
+
+**Scope:** Implement `TerminalRenderer` as a `RoverListener` that draws the grid, rover, path trail, and obstacles using ANSI escape codes. Add `--visual` and `--delay <ms>` CLI flags to App. In visual mode, use `StepExecutor` + `TerminalRenderer` for animated step-by-step output. Without `--visual`, behavior is unchanged.
+
+- [ ] `TerminalRenderer` implements `RoverListener`: ANSI-based grid rendering with directional arrows, path trail, obstacles
+- [ ] Modify `App`: add `--visual` and `--delay <ms>` flags; wire StepExecutor + TerminalRenderer in visual mode
+- [ ] Grid size inference for unbounded environments (default viewport centered on origin)
+- [ ] Test suite: renderer output, CLI flag parsing, backward compatibility
+- [ ] Coverage verification (maintain 95%+ branch coverage)
