@@ -159,62 +159,66 @@ _New and modified classes to be documented here._
 
 _Design sections to be added when each version enters planning._
 
-## Roadmap
+## Roadmap & Implementation
 
 ### V0 (MVP) — Completed
-- Infinite plane, single rover, three actions (L, R, M)
-- Full TDD with 95%+ branch coverage
 
-### V1 — Concurrency (Completed)
-- Hybrid `AtomicReference` + `synchronized` concurrency strategy (see [Design > V0 + V1](#v0--v1-current) for details)
-- Refactor `Rover` to store state as `AtomicReference<RoverState>`
-- Thread-safe `ActionParser` registry (`ConcurrentHashMap`)
-- Concurrency test suite (multi-thread correctness, state consistency)
+**Goal:** Single rover on an infinite plane with basic commands.
+
+- [x] `Direction` enum (leaf — no deps)
+- [x] `Position` record (depends on Direction)
+- [x] `RoverState` record (pure data carrier)
+- [x] `Action` interface + `TurnLeftAction` / `TurnRightAction` / `MoveForwardAction`
+- [x] `InvalidActionException` + `ActionParser`
+- [x] `Rover`
+- [x] `App` CLI integration
+- [x] Full TDD with 95%+ branch coverage
+
+### V1 — Concurrency — Completed
+
+**Goal:** Thread-safe Rover for production multi-user scenarios. See [Design > V0 + V1](#v0--v1-current) for strategy details.
+
+- [x] Refactor `Rover`: merge `position` + `direction` into `AtomicReference<RoverState>`
+- [x] `execute()` methods add `synchronized` — action executes exactly once
+- [x] `getPosition()` / `getDirection()` delegate to `AtomicReference.get()` — lock-free reads
+- [x] Add `getState()` method — returns immutable `RoverState` snapshot
+- [x] `execute(List<Action>)` holds lock for entire batch — atomic sequence execution
+- [x] `ActionParser`: `HashMap` → `ConcurrentHashMap` for thread-safe register + parse
+- [x] Add `RoverConcurrencyTest` (4 tests: move correctness, state consistency, rotation invariant, parser thread safety)
+- [x] Coverage verification (maintain 95%+ branch coverage)
 
 ### V2 — Geographic Constraints
-- **Grid boundaries:** Introduce a finite grid (e.g., `width × height`); rover cannot move beyond edges
-- **Obstacles:** Certain cells are impassable; rover must detect and handle blocked moves
-- **Strategy for constraints:** Define how rover reacts to boundary/obstacle violations (e.g., ignore move, throw exception, or find alternative path)
+
+**Goal:** Finite grid with boundaries and obstacles.
+
+- [ ] Grid boundaries: introduce a finite grid (`width × height`); rover cannot move beyond edges
+- [ ] Obstacles: certain cells are impassable; rover must detect and handle blocked moves
+- [ ] Constraint violation strategy: define how rover reacts (ignore move, throw exception, or find alternative path)
+- [ ] Test suite for boundary and obstacle scenarios
+- [ ] Coverage verification
 
 ### V3 — Additional Commands
-- Expand the `Action` set beyond L/R/M (e.g., backward move, jump, U-turn, etc.)
-- Leverage the existing Strategy pattern and `ActionParser` registry for zero-modification extensibility
+
+**Goal:** Expand the action set beyond L/R/M.
+
+- [ ] New actions (e.g., backward move, jump, U-turn — TBD)
+- [ ] Leverage existing Strategy pattern + `ActionParser` registry for zero-modification extensibility
+- [ ] Test suite for new actions
+- [ ] Coverage verification
 
 ### V4 — Multi-Rover Control
-- Support multiple rovers on the same plane
-- Rover registry / fleet management
-- Collision detection and coordination between rovers
+
+**Goal:** Multiple rovers operating on the same plane.
+
+- [ ] Rover registry / fleet management
+- [ ] Collision detection and coordination between rovers
+- [ ] Test suite for multi-rover scenarios
+- [ ] Coverage verification
 
 ### V5 — Real-Time UI
-- Visual interface showing rover position and movement in real time
-- Live rendering of action execution (not just final coordinates)
-- Interactive control panel
 
-## Implementation Order
+**Goal:** Visual interface for live rover observation.
 
-### V0
-1. `Direction` enum (leaf — no deps)
-2. `Position` record (depends on Direction)
-3. `RoverState` record (pure data carrier)
-4. `Action` interface + TurnLeft/TurnRight/MoveForward
-5. `InvalidActionException` + `ActionParser`
-6. `Rover`
-7. `App` integration
-8. Coverage verification
-
-### V1 (Completed)
-1. Refactor `Rover`: merge `position` + `direction` into `AtomicReference<RoverState>`
-2. `execute()` methods add `synchronized` — action executes exactly once
-3. `getPosition()` / `getDirection()` delegate to `AtomicReference.get()` — lock-free reads
-4. Add `getState()` method — returns immutable `RoverState` snapshot
-5. `execute(List<Action>)` holds lock for entire batch — atomic sequence execution
-6. `ActionParser`: `HashMap` → `ConcurrentHashMap` for thread-safe register + parse
-7. Add `RoverConcurrencyTest`:
-   - Multi-thread MoveForward: verify total distance correctness
-   - Concurrent read/write: verify `getState()` always returns consistent snapshot
-   - Concurrent full rotations (LLLL): verify direction invariant
-   - ActionParser concurrent register + parse: verify no exceptions or data loss
-8. Coverage verification (maintain 95%+ branch coverage)
-
-### V2–V5
-_To be defined at implementation time._
+- [ ] Visual interface showing rover position and movement in real time
+- [ ] Live rendering of action execution (not just final coordinates)
+- [ ] Interactive control panel
