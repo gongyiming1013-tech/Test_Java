@@ -826,84 +826,84 @@ Add `--theme` CLI flag.
 - [x] Add `RoverConcurrencyTest` (4 tests: move correctness, state consistency, rotation invariant, parser thread safety)
 - [x] Coverage verification (maintain 95%+ branch coverage)
 
-### V2 — Geographic Constraints
+### V2 — Geographic Constraints — Completed
 
 **Scope:** Allow users to optionally specify a finite grid (`width × height`), obstacle positions, boundary mode (bounded or wrap), and conflict resolution policy (fail, skip, or reverse). Rover validates moves against environment constraints before committing state. All constraints are optional — omitting them preserves V1 behavior (infinite plane, no obstacles). CLI extended with `--grid`, `--wrap`, `--obstacles`, and `--on-conflict` flags.
 
-- [ ] `ConflictPolicy` enum (`FAIL`, `SKIP`, `REVERSE`)
-- [ ] `BoundaryMode` enum (`BOUNDED`, `WRAP`)
-- [ ] `MoveResult` record (`Position position`, `boolean blocked`)
-- [ ] `Environment` interface with `MoveResult validate(Position current, Position proposed)` method
-- [ ] `UnboundedEnvironment` — no constraints, default for backward compatibility
-- [ ] `GridEnvironment` — finite grid with width/height, `Set<Position>` obstacles, configurable `BoundaryMode`
-- [ ] `MoveBlockedException` — thrown when `ConflictPolicy.FAIL` is active and move is blocked
-- [ ] Modify `Rover` — add optional `Environment` + `ConflictPolicy` fields; apply policy in `execute()` when move is blocked
-- [ ] Modify `App` — parse `--grid`, `--wrap`, `--obstacles`, `--on-conflict` CLI flags
-- [ ] Test suite: boundary BOUNDED/WRAP, obstacles, three conflict policies (FAIL/SKIP/REVERSE), backward compatibility, mixed sequences, error handling, CLI integration, concurrency
-- [ ] Coverage verification (maintain 95%+ branch coverage)
+- [x] `ConflictPolicy` enum (`FAIL`, `SKIP`, `REVERSE`)
+- [x] `BoundaryMode` enum (`BOUNDED`, `WRAP`)
+- [x] `MoveResult` record (`Position position`, `boolean blocked`)
+- [x] `Environment` interface with `MoveResult validate(Position current, Position proposed)` method
+- [x] `UnboundedEnvironment` — no constraints, default for backward compatibility
+- [x] `GridEnvironment` — finite grid with width/height, `Set<Position>` obstacles, configurable `BoundaryMode`
+- [x] `MoveBlockedException` — thrown when `ConflictPolicy.FAIL` is active and move is blocked
+- [x] Modify `Rover` — add optional `Environment` + `ConflictPolicy` fields; apply policy in `execute()` when move is blocked
+- [x] Modify `App` — parse `--grid`, `--wrap`, `--obstacles`, `--on-conflict` CLI flags
+- [x] Test suite: boundary BOUNDED/WRAP, obstacles, three conflict policies (FAIL/SKIP/REVERSE), backward compatibility, mixed sequences, error handling, CLI integration, concurrency
+- [x] Coverage verification (maintain 95%+ branch coverage)
 
-### V3 — Additional Commands
+### V3 — Additional Commands — Completed
 
 **Scope:** Add five new commands: B (backward), S (speed boost/jump), U (u-turn), Z (undo), Y (redo). New movement actions leverage the existing Strategy pattern and ActionParser registry. Undo/redo uses state history stacks in Rover with marker Action classes detected via instanceof. Add `--verbose` flag for text-only step reporting. All changes are additive — existing commands and behavior unchanged.
 
-- [ ] `BackwardAction` (B): move one step opposite to facing, direction unchanged
-- [ ] `SpeedBoostAction` (S): jump two cells forward (final position validated only)
-- [ ] `UTurnAction` (U): reverse direction 180°
-- [ ] `UndoAction` (Z) + `RedoAction` (Y): marker actions for undo/redo
-- [ ] Modify `Rover`: add history/redo stacks, detect undo/redo in `executeOne()`
-- [ ] Modify `ActionParser`: register B, S, U, Z, Y by default
-- [ ] Modify `App`: add `--verbose` flag
-- [ ] Test suite: each new action, undo/redo (basic + edge cases), mixed commands, environment integration, listener integration, verbose mode
-- [ ] Coverage verification (maintain 95%+ branch coverage)
+- [x] `BackwardAction` (B): move one step opposite to facing, direction unchanged
+- [x] `SpeedBoostAction` (S): jump two cells forward (final position validated only)
+- [x] `UTurnAction` (U): reverse direction 180°
+- [x] `UndoAction` (Z) + `RedoAction` (Y): marker actions for undo/redo
+- [x] Modify `Rover`: add history/redo stacks, detect undo/redo in `executeOne()`
+- [x] Modify `ActionParser`: register B, S, U, Z, Y by default
+- [x] `VerboseListener` + Modify `App`: add `--verbose` flag for text-only step reporting
+- [x] Test suite: each new action, undo/redo (basic + edge cases), mixed commands, environment integration, listener integration, verbose mode
+- [x] Coverage verification (maintain 95%+ branch coverage)
 
-### V4 — Multi-Rover Control
+### V4 — Multi-Rover Control — Completed
 
 **Scope:** Manage multiple rovers on a shared grid via an `Arena` class. Each rover has a unique ID for selection and command routing. Collision avoidance is handled transparently through `ArenaEnvironment` (wraps base Environment + dynamic rover positions). Two execution modes: sequential (one rover at a time) and parallel (round-robin). CLI extended with `--arena`, `--rover "ID:x,y,dir:commands"`, and `--parallel` flags. Without `--arena`, single-rover mode unchanged.
 
-- [ ] `ArenaEnvironment` — wraps base Environment, adds rover collision detection via `arena.isOccupied()`
-- [ ] `Arena` — fleet manager: rover registry (`createRover`, `removeRover`, `getRover`), position tracking, `isOccupied()`
-- [ ] `Arena.executeSequential()` — one rover completes all commands, then the next
-- [ ] `Arena.executeParallel()` — round-robin: one step per rover per round, mutual collision = both blocked
-- [ ] Modify `App` — add `--arena`, `--rover`, `--parallel` CLI flags
-- [ ] Multi-rover visual rendering — distinct symbols per rover on shared grid
-- [ ] Test suite: rover lifecycle, collision avoidance (all 3 ConflictPolicies), sequential/parallel execution, combined constraints (arena + grid + obstacles), visual mode, CLI parsing, backward compatibility
-- [ ] Coverage verification (maintain 95%+ branch coverage)
+- [x] `ArenaEnvironment` — wraps base Environment, adds rover collision detection via `arena.isOccupied()`
+- [x] `Arena` — fleet manager: rover registry (`createRover`, `removeRover`, `getRover`), position tracking, `isOccupied()`
+- [x] `Arena.executeSequential()` — one rover completes all commands, then the next
+- [x] `Arena.executeParallel()` — round-robin: one step per rover per round, mutual collision = both blocked
+- [x] Modify `App` — add `--arena`, `--rover`, `--parallel` CLI flags
+- [x] `ArenaRenderer` — multi-rover visual rendering with distinct labels (A/a, B/b) on shared grid
+- [x] Test suite: rover lifecycle, collision avoidance (all 3 ConflictPolicies), sequential/parallel execution, combined constraints (arena + grid + obstacles), visual mode, CLI parsing, backward compatibility
+- [x] Coverage verification (maintain 95%+ branch coverage)
 
-### V5a — Observer + Step Execution
+### V5a — Observer + Step Execution — Completed
 
 **Scope:** Add Observer pattern to Rover so external components can observe each step of execution. Introduce `RoverListener` interface, `RoverEvent` record, and `StepExecutor` for paced action execution with configurable delay. This is the pure backend foundation — no UI dependency. All existing behavior remains backward compatible (no listeners = no overhead).
 
-- [ ] `RoverEvent` record (previousState, newState, action, stepIndex, totalSteps, blocked)
-- [ ] `RoverListener` interface (`onStep`, `onComplete`)
-- [ ] Modify `Rover`: add `listeners` list, `addListener()`, `removeListener()`, notify in `executeOne()`
-- [ ] `StepExecutor`: synchronous `execute()` with configurable delay, async `executeAsync()` on background thread
-- [ ] Test suite: observer notification, listener lifecycle, StepExecutor timing, conflict policy integration
-- [ ] Coverage verification (maintain 95%+ branch coverage)
+- [x] `RoverEvent` record (previousState, newState, action, stepIndex, totalSteps, blocked)
+- [x] `RoverListener` interface (`onStep`, `onComplete`)
+- [x] Modify `Rover`: add `listeners` list, `addListener()`, `removeListener()`, notify in `executeOne()`
+- [x] `StepExecutor`: synchronous `execute()` with configurable delay, async `executeAsync()` on background thread
+- [x] Test suite: observer notification, listener lifecycle, StepExecutor timing, conflict policy integration
+- [x] Coverage verification (maintain 95%+ branch coverage)
 
-### V5b — Terminal Renderer
+### V5b — Terminal Renderer — Completed
 
 **Scope:** Implement `TerminalRenderer` as a `RoverListener` that draws the grid, rover, path trail, and obstacles using ANSI escape codes. Add `--visual` and `--delay <ms>` CLI flags to App. In visual mode, use `StepExecutor` + `TerminalRenderer` for animated step-by-step output. Without `--visual`, behavior is unchanged.
 
-- [ ] `TerminalRenderer` implements `RoverListener`: ANSI-based grid rendering with directional arrows, path trail, obstacles
-- [ ] Modify `App`: add `--visual` and `--delay <ms>` flags; wire StepExecutor + TerminalRenderer in visual mode
-- [ ] Grid size inference for unbounded environments (default viewport centered on origin)
-- [ ] Test suite: renderer output, CLI flag parsing, backward compatibility
-- [ ] Coverage verification (maintain 95%+ branch coverage)
+- [x] `TerminalRenderer` implements `RoverListener`: ANSI-based grid rendering with directional arrows, path trail, obstacles
+- [x] Modify `App`: add `--visual` and `--delay <ms>` flags; wire StepExecutor + TerminalRenderer in visual mode
+- [x] Grid size inference for unbounded environments (default viewport centered on origin)
+- [x] Test suite: renderer output, CLI flag parsing, backward compatibility
+- [x] Coverage verification (maintain 95%+ branch coverage)
 
 ### V5c — Enhanced Terminal UI
 
 **Scope:** Upgrade `TerminalRenderer` from a bare-bones monochrome display to a polished, modern terminal experience. Introduce a `Theme` abstraction with three implementations (`ModernTheme`, `MinimalTheme`, `MonoTheme`) that control all visual aspects — colors, symbols, borders, and animation behavior. Add `AnsiStyle` utility for centralized ANSI escape code generation, `GridFrame` for Unicode box-drawing borders with axis labels, and `StatusBar` for a real-time dashboard (progress bar, command preview, rover state). Rendering is upgraded to flicker-free cursor-home overwrite, and path trails gain a color gradient based on recency. Blocked moves flash in a warning color. Multi-rover mode gets per-rover color coding. CLI extended with `--theme` flag. Graceful degradation to `MonoTheme` on unsupported terminals.
 
-- [ ] `AnsiStyle` utility class: `fg256`, `bg256`, `bold`, `dim`, `reset`, `cursorHome`, `hideCursor`, `showCursor`
-- [ ] `Theme` interface: `roverColor`, `roverSymbol`, `pathColor`, `pathSymbol`, `obstacleColor`, `obstacleSymbol`, `emptySymbol`, `borderColor`, `blockedColor`, `statusStyle`, `gradientWindow`
-- [ ] `ModernTheme`: cyan rover, blue→gray gradient trail, white box-drawing frame, red blocked flash, green progress bar
-- [ ] `MinimalTheme`: white rover, gray gradient trail, dim frame, yellow blocked flash
-- [ ] `MonoTheme`: no color, plain ASCII symbols, V5b-compatible fallback
-- [ ] `GridFrame`: box-drawing borders (`─ │ ┌ ┐ └ ┘`), axis labels (column/row numbers)
-- [ ] `StatusBar`: progress bar (`████░░░░░░`), command preview with current action highlighted, rover state display, blocked-move warning
-- [ ] Refactor `TerminalRenderer`: compose with `Theme` + `GridFrame` + `StatusBar`; cursor-home overwrite (no screen clear); gradient path trail; blocked-move flash
-- [ ] Multi-rover color coding: per-rover color from theme palette, colored path trails per rover
-- [ ] Modify `App`: add `--theme modern/minimal/mono` flag; auto-detect terminal capability via `TERM` env var
-- [ ] Graceful degradation: auto-fallback to `MonoTheme` when terminal lacks 256-color support
-- [ ] Test suite: AnsiStyle output, Theme contract (all 3 implementations), GridFrame borders, StatusBar rendering, gradient trail, flicker-free rendering, blocked flash, theme selection + auto-detect, multi-rover colors, MonoTheme backward compatibility
-- [ ] Coverage verification (maintain 95%+ branch coverage)
+- [x] `AnsiStyle` utility class: `fg256`, `bg256`, `bold`, `dim`, `reset`, `cursorHome`, `hideCursor`, `showCursor`
+- [x] `Theme` interface: `roverColor`, `roverSymbol`, `pathColor`, `pathSymbol`, `obstacleColor`, `obstacleSymbol`, `emptySymbol`, `borderColor`, `blockedColor`, `statusStyle`, `gradientWindow`
+- [x] `ModernTheme`: cyan rover, blue→gray gradient trail, white box-drawing frame, red blocked flash, green progress bar
+- [x] `MinimalTheme`: white rover, gray gradient trail, dim frame, yellow blocked flash
+- [x] `MonoTheme`: no color, plain ASCII symbols, V5b-compatible fallback
+- [x] `GridFrame`: box-drawing borders (`─ │ ┌ ┐ └ ┘`), axis labels (column/row numbers)
+- [x] `StatusBar`: progress bar (`████░░░░░░`), command preview with current action highlighted, rover state display, blocked-move warning
+- [x] Refactor `TerminalRenderer`: compose with `Theme` + `GridFrame` + `StatusBar`; cursor-home overwrite (no screen clear); gradient path trail; blocked-move flash
+- [x] Multi-rover color coding: per-rover color from theme palette, colored path trails per rover
+- [x] Modify `App`: add `--theme modern/minimal/mono` flag; auto-detect terminal capability via `TERM` env var
+- [x] Graceful degradation: auto-fallback to `MonoTheme` when terminal lacks 256-color support
+- [x] Test suite: AnsiStyle output, Theme contract (all 3 implementations), GridFrame borders, StatusBar rendering, gradient trail, flicker-free rendering, blocked flash, theme selection + auto-detect, multi-rover colors, MonoTheme backward compatibility
+- [x] Coverage verification (maintain 95%+ branch coverage)
