@@ -1,7 +1,10 @@
 package com.rover;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -10,6 +13,7 @@ import java.util.Set;
  * <p>Accepts a command string and optional flags for grid constraints:</p>
  * <pre>
  *   java -jar rover.jar [--grid WxH] [--wrap] [--obstacles "x1,y1;x2,y2"] [--on-conflict fail|skip|reverse] [--visual] [--delay ms] "COMMANDS"
+ *   java -jar rover.jar --arena [--grid WxH] [--parallel] [--rover "ID:x,y,dir:commands"] ...
  * </pre>
  */
 public class App {
@@ -58,6 +62,9 @@ public class App {
         ConflictPolicy conflictPolicy = ConflictPolicy.FAIL;
         boolean visual = false;
         long delayMs = 500;
+        boolean arenaMode = false;
+        boolean parallel = false;
+        List<String> roverSpecs = new ArrayList<>();
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -67,11 +74,16 @@ public class App {
                 case "--on-conflict" -> conflictPolicy = ConflictPolicy.valueOf(args[++i].toUpperCase());
                 case "--visual" -> visual = true;
                 case "--delay" -> delayMs = Long.parseLong(args[++i]);
+                case "--arena" -> arenaMode = true;
+                case "--parallel" -> parallel = true;
+                case "--rover" -> roverSpecs.add(args[++i]);
                 default -> commands = args[i];
             }
         }
 
-        if (visual) {
+        if (arenaMode) {
+            runArena(gridSpec, wrap, obstaclesSpec, conflictPolicy, visual, delayMs, parallel, roverSpecs);
+        } else if (visual) {
             runVisual(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy, delayMs);
         } else {
             String result = run(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy);
@@ -109,6 +121,78 @@ public class App {
         } catch (MoveBlockedException e) {
             System.out.println("Execution stopped: " + e.getMessage());
         }
+    }
+
+    private static void runArena(String gridSpec, boolean wrap, String obstaclesSpec,
+                                  ConflictPolicy conflictPolicy, boolean visual, long delayMs,
+                                  boolean parallel, List<String> roverSpecs) {
+        Environment baseEnv = buildEnvironment(gridSpec, wrap, obstaclesSpec);
+        Arena arena = new Arena(baseEnv, conflictPolicy);
+        ActionParser parser = new ActionParser();
+
+        int viewWidth = (baseEnv instanceof GridEnvironment ge) ? ge.getWidth() : 20;
+        int viewHeight = (baseEnv instanceof GridEnvironment ge) ? ge.getHeight() : 20;
+        Set<Position> obstacleSet = (baseEnv instanceof GridEnvironment ge) ? ge.getObstacles() : Set.of();
+
+        ArenaRenderer arenaRenderer = visual
+                ? new ArenaRenderer(viewWidth, viewHeight, obstacleSet, arena)
+                : null;
+
+        Map<String, List<Action>> commands = new LinkedHashMap<>();
+        for (String spec : roverSpecs) {
+            String[] parts = spec.split(":");
+            if (parts.length != 3) {
+                throw new IllegalArgumentException("Invalid rover spec: " + spec + " (expected ID:x,y,dir:commands)");
+            }
+            String id = parts[0];
+            String[] posDir = parts[1].split(",");
+            if (posDir.length != 3) {
+                throw new IllegalArgumentException("Invalid rover position: " + parts[1] + " (expected x,y,dir)");
+            }
+            int x = Integer.parseInt(posDir[0].trim());
+            int y = Integer.parseInt(posDir[1].trim());
+            Direction dir = parseDirection(posDir[2].trim());
+
+            Rover rover = arena.createRover(id, new Position(x, y), dir);
+            commands.put(id, parser.parse(parts[2]));
+
+            if (arenaRenderer != null) {
+                rover.addListener(arenaRenderer.listenerFor(id));
+            }
+        }
+
+        try {
+            if (parallel) {
+                arena.executeParallel(commands);
+            } else {
+                arena.executeSequential(commands);
+            }
+        } catch (MoveBlockedException e) {
+            System.out.println("Execution stopped: " + e.getMessage());
+        }
+
+        if (arenaRenderer != null) {
+            arenaRenderer.onAllComplete();
+        }
+
+        // Print final positions
+        Map<String, Position> positions = arena.getPositions();
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Position> entry : positions.entrySet()) {
+            if (sb.length() > 0) sb.append(" ");
+            sb.append(entry.getKey()).append(":").append(entry.getValue().x()).append(",").append(entry.getValue().y());
+        }
+        System.out.println(sb);
+    }
+
+    private static Direction parseDirection(String dir) {
+        return switch (dir.toUpperCase()) {
+            case "N" -> Direction.NORTH;
+            case "S" -> Direction.SOUTH;
+            case "E" -> Direction.EAST;
+            case "W" -> Direction.WEST;
+            default -> throw new IllegalArgumentException("Invalid direction: " + dir + " (expected N/S/E/W)");
+        };
     }
 
     private static Environment buildEnvironment(String gridSpec, boolean wrap, String obstaclesSpec) {
