@@ -302,11 +302,123 @@ Parse new CLI flags and construct appropriate `Environment` and `ConflictPolicy`
 
 _Design to be added when this version enters planning._
 
-### V4 — Multi-Rover Control (Planned)
+### V4 — Multi-Rover Control
 
-**Goal:** Support multiple rovers operating concurrently on the same grid with collision awareness.
+**Goal:** Manage multiple rovers on a shared grid with unique IDs, collision avoidance between rovers, and support for both sequential and parallel execution modes.
 
-_Design to be added when this version enters planning._
+#### Problem Analysis
+
+Current system supports one rover. Multi-rover introduces:
+1. **Identity** — each rover needs a unique ID for selection and command routing.
+2. **Shared state** — rovers share the same grid; one rover's position is effectively a dynamic obstacle for others.
+3. **Collision** — two rovers must not occupy the same cell. Unlike static obstacles, rover positions change every step.
+4. **Execution ordering** — when multiple rovers have commands, the order of execution affects outcomes (especially collisions).
+
+#### Strategy Comparison
+
+**How to handle inter-rover collision detection?**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| Collision check in Arena orchestration | Arena checks target cell before delegating to Rover | Clear separation; Arena owns fleet state | Duplicates validation logic outside Rover | Rejected |
+| Modify Rover to accept occupied set | Rover receives `Set<Position>` of other rovers | Rover handles everything | Couples Rover to fleet concept | Rejected |
+| **ArenaEnvironment wrapper** | Wraps base Environment; adds other rovers' positions as dynamic obstacles | Rover unchanged; existing ConflictPolicy works for collisions; clean composition via Environment interface | Extra wrapper class | **Adopted** |
+
+**Execution modes:**
+
+| Mode | Description | Behavior |
+|------|-------------|----------|
+| **Sequential** | One rover completes all commands, then the next | Simple; deterministic; earlier rovers have "priority" |
+| **Parallel (round-robin)** | One step per rover per round; all rovers advance together | Fair; more realistic; requires per-round collision resolution |
+
+Both supported. Default: sequential. Parallel via `--parallel` flag.
+
+**Parallel collision resolution:** If two rovers try to move to the same cell in the same round, neither moves (both treated as blocked, ConflictPolicy applied to each).
+
+#### Design Discussion
+
+- **ArenaEnvironment composition:** `ArenaEnvironment` wraps any `Environment` (including `UnboundedEnvironment` or `GridEnvironment`). It checks rover collisions first, then delegates to the base environment for boundary/obstacle checks. The `validate(current, proposed)` method uses `current` to identify the moving rover and excludes it from the occupied set.
+- **Rover creation:** Arena assigns each rover an `ArenaEnvironment` that has a reference back to the Arena for dynamic position queries. Rovers are unaware they're in an arena.
+- **CLI design:**
+  ```
+  # Define rovers inline: --rover "ID:x,y,direction:commands"
+  java -jar rover.jar --arena --grid 5x5 \
+    --rover "R1:0,0,N:MMRMM" \
+    --rover "R2:4,4,S:MMLM"
+
+  # Parallel execution
+  java -jar rover.jar --arena --grid 5x5 --parallel \
+    --rover "R1:0,0,N:MMRMM" \
+    --rover "R2:4,4,S:MMLM"
+
+  # With visual mode
+  java -jar rover.jar --arena --grid 5x5 --visual --delay 500 \
+    --rover "R1:0,0,N:MMRMM" \
+    --rover "R2:4,4,S:MMLM"
+  ```
+- **Output format:** Non-visual mode prints each rover's final position: `R1:2,3 R2:3,1`. Visual mode renders all rovers on the same grid with distinct symbols (`A▲`, `B▲`, etc. or numbered).
+- **Backward compatibility:** Without `--arena`, single-rover mode is unchanged.
+
+#### Class & Data Structure Changes
+
+##### `Arena` — Class (New)
+Fleet manager. Owns rovers, shared environment, and execution orchestration.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `rovers` | `Map<String, Rover>` | Rover registry keyed by ID |
+| `roverPositions` | `Map<String, Position>` | Live position tracking for collision detection |
+| `baseEnvironment` | `Environment` | Shared environment (grid/obstacles) |
+| `conflictPolicy` | `ConflictPolicy` | Shared conflict policy |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `createRover` | `Rover createRover(String id, Position pos, Direction dir)` | Creates and registers a rover with ArenaEnvironment |
+| `removeRover` | `void removeRover(String id)` | Removes a rover from the arena |
+| `getRover` | `Rover getRover(String id)` | Retrieves a rover by ID |
+| `getPositions` | `Map<String, Position> getPositions()` | Returns all rover positions |
+| `executeSequential` | `void executeSequential(Map<String, List<Action>> commands)` | Executes each rover's commands in full, one rover at a time |
+| `executeParallel` | `void executeParallel(Map<String, List<Action>> commands)` | Round-robin: one step per rover per round |
+| `isOccupied` | `boolean isOccupied(Position pos, Position excludeSelf)` | Returns true if any rover (other than the one at excludeSelf) occupies pos |
+
+##### `ArenaEnvironment` — Class implements `Environment` (New)
+Wraps a base Environment and adds dynamic rover collision detection.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `base` | `Environment` | Underlying environment (grid/obstacles/unbounded) |
+| `arena` | `Arena` | Reference to arena for position queries |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `validate` | `MoveResult validate(Position current, Position proposed)` | Check rover collision first (via `arena.isOccupied`), then delegate to base |
+
+##### `Rover` — Unchanged
+No modifications needed. Collision is transparent through the ArenaEnvironment.
+
+##### `App` — Modified
+Add `--arena`, `--rover`, and `--parallel` CLI flags.
+
+| Flag | Format | Description |
+|------|--------|-------------|
+| `--arena` | (no value) | Enable multi-rover arena mode |
+| `--rover` | `"ID:x,y,dir:commands"` | Define a rover (repeatable) |
+| `--parallel` | (no value) | Use round-robin parallel execution (default: sequential) |
+
+#### Test Plan
+
+| Dimension | Covers | Key Scenarios |
+|-----------|--------|---------------|
+| Rover lifecycle | Create, get, remove | Create rover with ID, duplicate ID rejected, remove rover, get non-existent ID |
+| Collision avoidance | Rover blocked by another rover | Move into occupied cell; ConflictPolicy FAIL/SKIP/REVERSE all work for collisions |
+| ArenaEnvironment | Collision + base environment | Collision check before boundary check; collision + obstacle; no collision = delegate to base |
+| Sequential execution | One rover at a time | Two rovers, first completes before second starts; first rover's final position affects second |
+| Parallel execution | Round-robin steps | Two rovers moving toward each other; mutual collision in same round; uneven command lengths |
+| Combined constraints | Arena + grid + obstacles | Rovers on bounded grid with obstacles and collision avoidance simultaneously |
+| Visual mode | Multi-rover rendering | All rovers shown on grid with distinct markers; paths for each rover |
+| Backward compatibility | Single-rover mode unchanged | All V0–V5 tests pass without `--arena` |
+| CLI parsing | `--arena`, `--rover`, `--parallel` | Multiple `--rover` flags, missing commands, invalid format |
+| Concurrency | Thread safety in arena | Concurrent reads of arena state during execution |
 
 ### V5 — Real-Time UI
 
@@ -497,12 +609,16 @@ Add `--visual` and `--delay <ms>` CLI flags. When visual mode is active, use `St
 
 ### V4 — Multi-Rover Control
 
-**Scope:** Support multiple rovers operating concurrently on the same grid. Introduce a rover registry for fleet management and implement collision detection and coordination between rovers.
+**Scope:** Manage multiple rovers on a shared grid via an `Arena` class. Each rover has a unique ID for selection and command routing. Collision avoidance is handled transparently through `ArenaEnvironment` (wraps base Environment + dynamic rover positions). Two execution modes: sequential (one rover at a time) and parallel (round-robin). CLI extended with `--arena`, `--rover "ID:x,y,dir:commands"`, and `--parallel` flags. Without `--arena`, single-rover mode unchanged.
 
-- [ ] Rover registry / fleet management
-- [ ] Collision detection and coordination between rovers
-- [ ] Test suite for multi-rover scenarios
-- [ ] Coverage verification
+- [ ] `ArenaEnvironment` — wraps base Environment, adds rover collision detection via `arena.isOccupied()`
+- [ ] `Arena` — fleet manager: rover registry (`createRover`, `removeRover`, `getRover`), position tracking, `isOccupied()`
+- [ ] `Arena.executeSequential()` — one rover completes all commands, then the next
+- [ ] `Arena.executeParallel()` — round-robin: one step per rover per round, mutual collision = both blocked
+- [ ] Modify `App` — add `--arena`, `--rover`, `--parallel` CLI flags
+- [ ] Multi-rover visual rendering — distinct symbols per rover on shared grid
+- [ ] Test suite: rover lifecycle, collision avoidance (all 3 ConflictPolicies), sequential/parallel execution, combined constraints (arena + grid + obstacles), visual mode, CLI parsing, backward compatibility
+- [ ] Coverage verification (maintain 95%+ branch coverage)
 
 ### V5a — Observer + Step Execution
 
