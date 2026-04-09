@@ -250,6 +250,15 @@ public class App {
      * @return the resolved theme instance
      */
     static Theme resolveTheme(String name) {
+        return resolveTheme(name, System.getenv("TERM"));
+    }
+
+    /**
+     * Package-private overload for testability. Accepts an explicit TERM value
+     * so unit tests can exercise the auto-detect branches without relying on
+     * the process environment.
+     */
+    static Theme resolveTheme(String name, String term) {
         if (name != null) {
             return switch (name.toLowerCase()) {
                 case "modern"  -> new ModernTheme();
@@ -260,7 +269,6 @@ public class App {
             };
         }
         // Auto-detect: fall back to mono if terminal appears to lack color support
-        String term = System.getenv("TERM");
         if (term == null || term.equals("dumb") || term.equals("unknown")) {
             return new MonoTheme();
         }
