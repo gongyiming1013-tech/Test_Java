@@ -1,5 +1,7 @@
 package com.rover;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
@@ -19,6 +21,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * <p>V2: Supports optional {@link Environment} for move validation and
  * {@link ConflictPolicy} for handling blocked moves.</p>
  *
+ * <p>V3: Supports undo/redo via state history stacks. {@link UndoAction} and
+ * {@link RedoAction} are detected via {@code instanceof} and handled specially.</p>
+ *
  * <p>V5: Supports {@link RoverListener} observers notified after each step.</p>
  */
 public class Rover {
@@ -27,6 +32,8 @@ public class Rover {
     private final Environment environment;
     private final ConflictPolicy conflictPolicy;
     private final List<RoverListener> listeners = new CopyOnWriteArrayList<>();
+    private final Deque<RoverState> history = new ArrayDeque<>();
+    private final Deque<RoverState> redoStack = new ArrayDeque<>();
 
     /** Creates a rover at the origin facing North, no constraints. */
     public Rover() {
@@ -150,6 +157,30 @@ public class Rover {
 
     private void executeOne(Action action, int stepIndex, int totalSteps) {
         RoverState previous = state.get();
+
+        // Undo: restore previous state from history
+        if (action instanceof UndoAction) {
+            if (!history.isEmpty()) {
+                redoStack.push(previous);
+                state.set(history.pop());
+            }
+            notifyStep(new RoverEvent(previous, state.get(), action, stepIndex, totalSteps, false));
+            return;
+        }
+
+        // Redo: re-apply from redo stack
+        if (action instanceof RedoAction) {
+            if (!redoStack.isEmpty()) {
+                history.push(previous);
+                state.set(redoStack.pop());
+            }
+            notifyStep(new RoverEvent(previous, state.get(), action, stepIndex, totalSteps, false));
+            return;
+        }
+
+        // Normal action — clear redo stack
+        redoStack.clear();
+
         RoverState next = action.execute(previous.position(), previous.direction());
         boolean blocked = false;
         boolean shouldThrow = false;
@@ -172,6 +203,11 @@ public class Rover {
             }
         } else {
             state.set(next);
+        }
+
+        // Only push to history if state actually changed
+        if (!state.get().equals(previous)) {
+            history.push(previous);
         }
 
         notifyStep(new RoverEvent(previous, state.get(), action, stepIndex, totalSteps, blocked));
