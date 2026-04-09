@@ -61,6 +61,7 @@ public class App {
         String obstaclesSpec = null;
         ConflictPolicy conflictPolicy = ConflictPolicy.FAIL;
         boolean visual = false;
+        boolean verbose = false;
         long delayMs = 500;
         String themeName = null;
         boolean arenaMode = false;
@@ -74,6 +75,7 @@ public class App {
                 case "--obstacles" -> obstaclesSpec = args[++i];
                 case "--on-conflict" -> conflictPolicy = ConflictPolicy.valueOf(args[++i].toUpperCase());
                 case "--visual" -> visual = true;
+                case "--verbose" -> verbose = true;
                 case "--delay" -> delayMs = Long.parseLong(args[++i]);
                 case "--theme" -> themeName = args[++i];
                 case "--arena" -> arenaMode = true;
@@ -89,10 +91,31 @@ public class App {
             runArena(gridSpec, wrap, obstaclesSpec, conflictPolicy, visual, delayMs, parallel, roverSpecs, theme);
         } else if (visual) {
             runVisual(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy, delayMs, theme);
+        } else if (verbose) {
+            runVerbose(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy);
         } else {
             String result = run(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy);
             System.out.println(result);
         }
+    }
+
+    private static void runVerbose(String commands, String gridSpec, boolean wrap,
+                                    String obstaclesSpec, ConflictPolicy conflictPolicy) {
+        Environment environment = buildEnvironment(gridSpec, wrap, obstaclesSpec);
+        ActionParser parser = new ActionParser();
+        List<Action> actions = parser.parse(commands);
+
+        Rover rover = new Rover(new Position(0, 0), Direction.NORTH, environment, conflictPolicy);
+        rover.addListener(new VerboseListener());
+
+        try {
+            rover.execute(actions);
+        } catch (MoveBlockedException e) {
+            System.out.println("Execution stopped: " + e.getMessage());
+        }
+
+        Position pos = rover.getPosition();
+        System.out.println(pos.x() + ":" + pos.y());
     }
 
     private static void runVisual(String commands, String gridSpec, boolean wrap,
