@@ -87,7 +87,7 @@ public class ArenaRendererTest {
         r1.execute(new MoveForwardAction()); // blocked by R2
 
         String output = baos.toString();
-        assertTrue("Should show BLOCKED", output.contains("[BLOCKED]"));
+        assertTrue("Should show Blocked", output.contains("Blocked"));
     }
 
     @Test
@@ -144,5 +144,81 @@ public class ArenaRendererTest {
         String output = baos.toString();
         assertTrue(output.contains("┌"));
         assertTrue(output.contains("┘"));
+    }
+
+    @Test
+    public void render_withModernTheme_containsAnsiCodes() {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        PrintStream out = new PrintStream(baos);
+
+        Arena arena = new Arena(new UnboundedEnvironment(), ConflictPolicy.FAIL);
+        ArenaRenderer renderer = new ArenaRenderer(5, 5, Set.of(), arena, out, new ModernTheme());
+
+        Rover r1 = arena.createRover("R1", new Position(0, 0), Direction.NORTH);
+        r1.addListener(renderer.listenerFor("R1"));
+
+        r1.execute(new MoveForwardAction());
+
+        String output = baos.toString();
+        assertTrue("Modern theme should produce ANSI codes", output.contains("\033[38;5;"));
+    }
+
+    @Test
+    public void render_twoRovers_withModernTheme_differentColors() {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        PrintStream out = new PrintStream(baos);
+
+        Arena arena = new Arena(new GridEnvironment(5, 5, Set.of(), BoundaryMode.BOUNDED), ConflictPolicy.SKIP);
+        ModernTheme modern = new ModernTheme();
+        ArenaRenderer renderer = new ArenaRenderer(5, 5, Set.of(), arena, out, modern);
+
+        Rover r1 = arena.createRover("R1", new Position(0, 0), Direction.NORTH);
+        Rover r2 = arena.createRover("R2", new Position(4, 4), Direction.SOUTH);
+        r1.addListener(renderer.listenerFor("R1"));
+        r2.addListener(renderer.listenerFor("R2"));
+
+        r1.execute(new MoveForwardAction());
+
+        String output = baos.toString();
+        // Both rover labels should appear
+        assertTrue(output.contains("A"));
+        assertTrue(output.contains("B"));
+        // Both color codes should be present (rover 0 = cyan/51, rover 1 = red/196)
+        assertTrue("R1 color should be present", output.contains(AnsiStyle.fg256(51)));
+        assertTrue("R2 color should be present", output.contains(AnsiStyle.fg256(196)));
+    }
+
+    @Test
+    public void render_usesFlickerFreeRendering() {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        PrintStream out = new PrintStream(baos);
+
+        Arena arena = new Arena(new UnboundedEnvironment(), ConflictPolicy.FAIL);
+        ArenaRenderer renderer = new ArenaRenderer(3, 3, Set.of(), arena, out);
+
+        Rover r1 = arena.createRover("R1", new Position(0, 0), Direction.NORTH);
+        r1.addListener(renderer.listenerFor("R1"));
+
+        r1.execute(new MoveForwardAction());
+
+        String output = baos.toString();
+        assertTrue("Should use cursor home", output.contains(AnsiStyle.cursorHome()));
+        assertFalse("Should NOT use clear screen", output.contains("\033[2J"));
+    }
+
+    @Test
+    public void onAllComplete_showsCursor() {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        PrintStream out = new PrintStream(baos);
+
+        Arena arena = new Arena(new UnboundedEnvironment(), ConflictPolicy.FAIL);
+        ArenaRenderer renderer = new ArenaRenderer(3, 3, Set.of(), arena, out);
+        arena.createRover("R1", new Position(0, 0), Direction.NORTH);
+        renderer.listenerFor("R1");
+
+        renderer.onAllComplete();
+
+        String output = baos.toString();
+        assertTrue("Should restore cursor", output.contains(AnsiStyle.showCursor()));
     }
 }

@@ -12,8 +12,8 @@ import java.util.Set;
  *
  * <p>Accepts a command string and optional flags for grid constraints:</p>
  * <pre>
- *   java -jar rover.jar [--grid WxH] [--wrap] [--obstacles "x1,y1;x2,y2"] [--on-conflict fail|skip|reverse] [--visual] [--delay ms] "COMMANDS"
- *   java -jar rover.jar --arena [--grid WxH] [--parallel] [--rover "ID:x,y,dir:commands"] ...
+ *   java -jar rover.jar [--grid WxH] [--wrap] [--obstacles "x1,y1;x2,y2"] [--on-conflict fail|skip|reverse] [--visual] [--delay ms] [--theme modern|minimal|mono] "COMMANDS"
+ *   java -jar rover.jar --arena [--grid WxH] [--parallel] [--theme modern|minimal|mono] [--rover "ID:x,y,dir:commands"] ...
  * </pre>
  */
 public class App {
@@ -62,6 +62,7 @@ public class App {
         ConflictPolicy conflictPolicy = ConflictPolicy.FAIL;
         boolean visual = false;
         long delayMs = 500;
+        String themeName = null;
         boolean arenaMode = false;
         boolean parallel = false;
         List<String> roverSpecs = new ArrayList<>();
@@ -74,6 +75,7 @@ public class App {
                 case "--on-conflict" -> conflictPolicy = ConflictPolicy.valueOf(args[++i].toUpperCase());
                 case "--visual" -> visual = true;
                 case "--delay" -> delayMs = Long.parseLong(args[++i]);
+                case "--theme" -> themeName = args[++i];
                 case "--arena" -> arenaMode = true;
                 case "--parallel" -> parallel = true;
                 case "--rover" -> roverSpecs.add(args[++i]);
@@ -81,10 +83,12 @@ public class App {
             }
         }
 
+        Theme theme = resolveTheme(themeName);
+
         if (arenaMode) {
-            runArena(gridSpec, wrap, obstaclesSpec, conflictPolicy, visual, delayMs, parallel, roverSpecs);
+            runArena(gridSpec, wrap, obstaclesSpec, conflictPolicy, visual, delayMs, parallel, roverSpecs, theme);
         } else if (visual) {
-            runVisual(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy, delayMs);
+            runVisual(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy, delayMs, theme);
         } else {
             String result = run(commands, gridSpec, wrap, obstaclesSpec, conflictPolicy);
             System.out.println(result);
@@ -92,7 +96,8 @@ public class App {
     }
 
     private static void runVisual(String commands, String gridSpec, boolean wrap,
-                                  String obstaclesSpec, ConflictPolicy conflictPolicy, long delayMs) {
+                                  String obstaclesSpec, ConflictPolicy conflictPolicy,
+                                  long delayMs, Theme theme) {
         Environment environment = buildEnvironment(gridSpec, wrap, obstaclesSpec);
         ActionParser parser = new ActionParser();
         List<Action> actions = parser.parse(commands);
@@ -112,7 +117,8 @@ public class App {
             obstacleSet = Set.of();
         }
 
-        TerminalRenderer renderer = new TerminalRenderer(viewWidth, viewHeight, obstacleSet);
+        TerminalRenderer renderer = new TerminalRenderer(viewWidth, viewHeight, obstacleSet,
+                System.out, theme, commands);
         rover.addListener(renderer);
 
         StepExecutor executor = new StepExecutor(rover, delayMs);
@@ -125,7 +131,7 @@ public class App {
 
     private static void runArena(String gridSpec, boolean wrap, String obstaclesSpec,
                                   ConflictPolicy conflictPolicy, boolean visual, long delayMs,
-                                  boolean parallel, List<String> roverSpecs) {
+                                  boolean parallel, List<String> roverSpecs, Theme theme) {
         Environment baseEnv = buildEnvironment(gridSpec, wrap, obstaclesSpec);
         Arena arena = new Arena(baseEnv, conflictPolicy);
         ActionParser parser = new ActionParser();
@@ -135,7 +141,7 @@ public class App {
         Set<Position> obstacleSet = (baseEnv instanceof GridEnvironment ge) ? ge.getObstacles() : Set.of();
 
         ArenaRenderer arenaRenderer = visual
-                ? new ArenaRenderer(viewWidth, viewHeight, obstacleSet, arena)
+                ? new ArenaRenderer(viewWidth, viewHeight, obstacleSet, arena, System.out, theme)
                 : null;
 
         Map<String, List<Action>> commands = new LinkedHashMap<>();
@@ -211,6 +217,31 @@ public class App {
         BoundaryMode boundaryMode = wrap ? BoundaryMode.WRAP : BoundaryMode.BOUNDED;
 
         return new GridEnvironment(width, height, obstacles, boundaryMode);
+    }
+
+    /**
+     * Resolves a theme by name. Falls back to {@link MonoTheme} when the terminal
+     * does not support 256-color (detected via the {@code TERM} environment variable).
+     *
+     * @param name theme name: "modern", "minimal", "mono", or null for auto-detect
+     * @return the resolved theme instance
+     */
+    static Theme resolveTheme(String name) {
+        if (name != null) {
+            return switch (name.toLowerCase()) {
+                case "modern"  -> new ModernTheme();
+                case "minimal" -> new MinimalTheme();
+                case "mono"    -> new MonoTheme();
+                default -> throw new IllegalArgumentException(
+                        "Unknown theme: " + name + " (expected modern, minimal, or mono)");
+            };
+        }
+        // Auto-detect: fall back to mono if terminal appears to lack color support
+        String term = System.getenv("TERM");
+        if (term == null || term.equals("dumb") || term.equals("unknown")) {
+            return new MonoTheme();
+        }
+        return new ModernTheme();
     }
 
     private static Set<Position> parseObstacles(String spec) {

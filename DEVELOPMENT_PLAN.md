@@ -894,16 +894,16 @@ Add `--theme` CLI flag.
 
 **Scope:** Upgrade `TerminalRenderer` from a bare-bones monochrome display to a polished, modern terminal experience. Introduce a `Theme` abstraction with three implementations (`ModernTheme`, `MinimalTheme`, `MonoTheme`) that control all visual aspects — colors, symbols, borders, and animation behavior. Add `AnsiStyle` utility for centralized ANSI escape code generation, `GridFrame` for Unicode box-drawing borders with axis labels, and `StatusBar` for a real-time dashboard (progress bar, command preview, rover state). Rendering is upgraded to flicker-free cursor-home overwrite, and path trails gain a color gradient based on recency. Blocked moves flash in a warning color. Multi-rover mode gets per-rover color coding. CLI extended with `--theme` flag. Graceful degradation to `MonoTheme` on unsupported terminals.
 
-- [ ] `AnsiStyle` utility class: `fg256`, `bg256`, `bold`, `dim`, `reset`, `cursorHome`, `hideCursor`, `showCursor`
-- [ ] `Theme` interface: `roverColor`, `roverSymbol`, `pathColor`, `pathSymbol`, `obstacleColor`, `obstacleSymbol`, `emptySymbol`, `borderColor`, `blockedColor`, `statusStyle`, `gradientWindow`
-- [ ] `ModernTheme`: cyan rover, blue→gray gradient trail, white box-drawing frame, red blocked flash, green progress bar
-- [ ] `MinimalTheme`: white rover, gray gradient trail, dim frame, yellow blocked flash
-- [ ] `MonoTheme`: no color, plain ASCII symbols, V5b-compatible fallback
-- [ ] `GridFrame`: box-drawing borders (`─ │ ┌ ┐ └ ┘`), axis labels (column/row numbers)
-- [ ] `StatusBar`: progress bar (`████░░░░░░`), command preview with current action highlighted, rover state display, blocked-move warning
-- [ ] Refactor `TerminalRenderer`: compose with `Theme` + `GridFrame` + `StatusBar`; cursor-home overwrite (no screen clear); gradient path trail; blocked-move flash
-- [ ] Multi-rover color coding: per-rover color from theme palette, colored path trails per rover
-- [ ] Modify `App`: add `--theme modern/minimal/mono` flag; auto-detect terminal capability via `TERM` env var
-- [ ] Graceful degradation: auto-fallback to `MonoTheme` when terminal lacks 256-color support
-- [ ] Test suite: AnsiStyle output, Theme contract (all 3 implementations), GridFrame borders, StatusBar rendering, gradient trail, flicker-free rendering, blocked flash, theme selection + auto-detect, multi-rover colors, MonoTheme backward compatibility
-- [ ] Coverage verification (maintain 95%+ branch coverage)
+- [x] `AnsiStyle` utility class: `fg256`, `bg256`, `bold`, `dim`, `reset`, `cursorHome`, `hideCursor`, `showCursor`
+- [x] `Theme` interface: `roverColor`, `roverSymbol`, `pathColor`, `pathSymbol`, `obstacleColor`, `obstacleSymbol`, `emptySymbol`, `borderColor`, `blockedColor`, `statusStyle`, `gradientWindow`
+- [x] `ModernTheme`: cyan rover, blue→gray gradient trail, white box-drawing frame, red blocked flash, green progress bar
+- [x] `MinimalTheme`: white rover, gray gradient trail, dim frame, yellow blocked flash
+- [x] `MonoTheme`: no color, plain ASCII symbols, V5b-compatible fallback
+- [x] `GridFrame`: box-drawing borders (`─ │ ┌ ┐ └ ┘`), axis labels (column/row numbers)
+- [x] `StatusBar`: progress bar (`████░░░░░░`), command preview with current action highlighted, rover state display, blocked-move warning
+- [x] Refactor `TerminalRenderer`: compose with `Theme` + `GridFrame` + `StatusBar`; cursor-home overwrite (no screen clear); gradient path trail; blocked-move flash
+- [x] Multi-rover color coding: per-rover color from theme palette, colored path trails per rover
+- [x] Modify `App`: add `--theme modern/minimal/mono` flag; auto-detect terminal capability via `TERM` env var
+- [x] Graceful degradation: auto-fallback to `MonoTheme` when terminal lacks 256-color support
+- [x] Test suite: AnsiStyle output, Theme contract (all 3 implementations), GridFrame borders, StatusBar rendering, gradient trail, flicker-free rendering, blocked flash, theme selection + auto-detect, multi-rover colors, MonoTheme backward compatibility
+- [x] Coverage verification (maintain 95%+ branch coverage)

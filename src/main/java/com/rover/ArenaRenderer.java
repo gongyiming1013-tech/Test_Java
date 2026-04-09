@@ -1,24 +1,22 @@
 package com.rover;
 
 import java.io.PrintStream;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * Renders multiple rovers on a shared terminal grid.
+ * Renders multiple rovers on a shared terminal grid with theme support.
  *
- * <p>Each rover is assigned a label (A, B, C, ...). Current positions
- * are shown as uppercase labels, trails as lowercase. Call
- * {@link #listenerFor(String)} to create a per-rover listener.</p>
+ * <p>Each rover is assigned a label (A, B, C, ...) and a distinct color
+ * from the active {@link Theme}. Current positions use directional symbols;
+ * path trails use directional arrows color-coded per rover. Grid framing
+ * and status display are delegated to {@link GridFrame} and {@link StatusBar}.</p>
  *
- * <p>Symbols:
- * <ul>
- *   <li>{@code A B C ...} — rover current position</li>
- *   <li>{@code a b c ...} — rover path trail</li>
- *   <li>{@code #} — obstacle</li>
- *   <li>{@code .} — empty cell</li>
- * </ul>
+ * <p>V5c: flicker-free cursor-home rendering, per-rover color coding,
+ * themed obstacles/borders, status dashboard.</p>
  */
 public class ArenaRenderer {
 
@@ -27,12 +25,17 @@ public class ArenaRenderer {
     private final Set<Position> obstacles;
     private final Arena arena;
     private final PrintStream out;
+    private final Theme theme;
+    private final GridFrame gridFrame;
     private final Map<String, Character> labels = new LinkedHashMap<>();
-    private final Map<String, Map<Position, Character>> trails = new LinkedHashMap<>();
+    private final Map<String, Integer> roverIndices = new LinkedHashMap<>();
+    private final Map<String, Map<Position, Direction>> trails = new LinkedHashMap<>();
     private char nextLabel = 'A';
+    private int nextIndex = 0;
+    private boolean started = false;
 
     /**
-     * Creates an arena renderer with default output to System.out.
+     * Creates an arena renderer with default output to System.out and MonoTheme.
      *
      * @param width     viewport width in cells
      * @param height    viewport height in cells
@@ -40,11 +43,11 @@ public class ArenaRenderer {
      * @param arena     the arena to query for rover positions
      */
     public ArenaRenderer(int width, int height, Set<Position> obstacles, Arena arena) {
-        this(width, height, obstacles, arena, System.out);
+        this(width, height, obstacles, arena, System.out, new MonoTheme());
     }
 
     /**
-     * Creates an arena renderer with a custom output stream.
+     * Creates an arena renderer with a custom output stream and MonoTheme.
      *
      * @param width     viewport width in cells
      * @param height    viewport height in cells
@@ -53,11 +56,28 @@ public class ArenaRenderer {
      * @param out       output stream
      */
     public ArenaRenderer(int width, int height, Set<Position> obstacles, Arena arena, PrintStream out) {
+        this(width, height, obstacles, arena, out, new MonoTheme());
+    }
+
+    /**
+     * Creates a fully configured V5c arena renderer.
+     *
+     * @param width     viewport width in cells
+     * @param height    viewport height in cells
+     * @param obstacles obstacle positions to render
+     * @param arena     the arena to query for rover positions
+     * @param out       output stream
+     * @param theme     visual theme for colors and symbols
+     */
+    public ArenaRenderer(int width, int height, Set<Position> obstacles,
+                         Arena arena, PrintStream out, Theme theme) {
         this.width = width;
         this.height = height;
         this.obstacles = obstacles;
         this.arena = arena;
         this.out = out;
+        this.theme = theme;
+        this.gridFrame = new GridFrame(width, height, theme);
     }
 
     /**
@@ -69,7 +89,9 @@ public class ArenaRenderer {
      */
     public RoverListener listenerFor(String roverId) {
         char label = nextLabel++;
+        int index = nextIndex++;
         labels.put(roverId, label);
+        roverIndices.put(roverId, index);
         trails.put(roverId, new LinkedHashMap<>());
 
         return new RoverListener() {
@@ -90,6 +112,7 @@ public class ArenaRenderer {
      * Prints final positions for all rovers.
      */
     public void onAllComplete() {
+        out.print(AnsiStyle.showCursor());
         StringBuilder sb = new StringBuilder("\nAll complete. ");
         for (Map.Entry<String, Character> entry : labels.entrySet()) {
             String id = entry.getKey();
@@ -102,13 +125,12 @@ public class ArenaRenderer {
     }
 
     private void onRoverStep(String roverId, RoverEvent event) {
-        Map<Position, Character> trail = trails.get(roverId);
-        char trailChar = Character.toLowerCase(labels.get(roverId));
+        Map<Position, Direction> trail = trails.get(roverId);
 
         if (event.stepIndex() == 0) {
-            trail.put(event.previousState().position(), trailChar);
+            trail.put(event.previousState().position(), event.previousState().direction());
         }
-        trail.put(event.newState().position(), trailChar);
+        trail.put(event.newState().position(), event.newState().direction());
 
         render(roverId, event);
     }
@@ -117,47 +139,63 @@ public class ArenaRenderer {
         Map<String, RoverState> allStates = arena.getAllStates();
         StringBuilder sb = new StringBuilder();
 
-        // Clear screen
-        sb.append("\033[2J\033[H");
+        // Cursor control
+        if (!started) {
+            sb.append(AnsiStyle.hideCursor());
+            started = true;
+        }
+        sb.append(AnsiStyle.cursorHome());
 
-        // Top border
-        sb.append("┌");
-        for (int x = 0; x < width; x++) sb.append("──");
-        sb.append("─┐\n");
+        // Grid frame top
+        sb.append(gridFrame.renderTop());
 
         // Grid rows
+        String reset = AnsiStyle.reset();
         for (int y = height - 1; y >= 0; y--) {
-            sb.append("│ ");
+            String[] cells = new String[width];
             for (int x = 0; x < width; x++) {
-                Position pos = new Position(x, y);
-                char cell = cellAt(pos, allStates);
-                sb.append(cell).append(' ');
+                cells[x] = cellAt(new Position(x, y), allStates, reset);
             }
-            sb.append("│\n");
+            sb.append(gridFrame.renderRow(y, cells));
         }
 
-        // Bottom border
-        sb.append("└");
-        for (int x = 0; x < width; x++) sb.append("──");
-        sb.append("─┘\n");
+        // Grid frame bottom
+        sb.append(gridFrame.renderBottom());
 
-        // Step info
-        String actionName = event.action().getClass().getSimpleName().replace("Action", "");
-        String blocked = event.blocked() ? " [BLOCKED]" : "";
+        // Step info for active rover
+        String style = theme.statusStyle();
+        String resetStyle = style.isEmpty() ? "" : reset;
         char activeLabel = labels.get(activeRoverId);
-        sb.append(String.format("%c(%s) Step %d/%d: %s (%d,%d) facing %s%s",
-                activeLabel, activeRoverId,
+        int activeIndex = roverIndices.get(activeRoverId);
+        String roverColor = theme.roverColor(activeIndex);
+        String resetColor = roverColor.isEmpty() ? "" : reset;
+
+        sb.append(style);
+        sb.append("  ").append(resetStyle);
+        sb.append(roverColor).append(activeLabel).append("(").append(activeRoverId).append(")").append(resetColor);
+        sb.append(style);
+        String actionName = event.action().getClass().getSimpleName().replace("Action", "");
+        String blocked = event.blocked() ? " ⚠ Blocked" : "";
+        sb.append(String.format(" Step %d/%d: %s (%d,%d) facing %s%s",
                 event.stepIndex() + 1, event.totalSteps(), actionName,
                 event.newState().position().x(), event.newState().position().y(),
                 event.newState().direction(), blocked));
+        sb.append(resetStyle).append("\n");
 
         // All rover positions summary
-        sb.append("\n");
         for (Map.Entry<String, RoverState> entry : allStates.entrySet()) {
-            char label = labels.getOrDefault(entry.getKey(), '?');
+            String id = entry.getKey();
+            char label = labels.getOrDefault(id, '?');
+            int idx = roverIndices.getOrDefault(id, 0);
             Position pos = entry.getValue().position();
-            sb.append(String.format("  %c(%s): %d,%d %s", label, entry.getKey(),
-                    pos.x(), pos.y(), entry.getValue().direction()));
+            String rc = theme.roverColor(idx);
+            String rcReset = rc.isEmpty() ? "" : reset;
+
+            sb.append(style).append("  ").append(resetStyle);
+            sb.append(rc).append(label).append("(").append(id).append(")").append(rcReset);
+            sb.append(style);
+            sb.append(String.format(": %d,%d %s", pos.x(), pos.y(), entry.getValue().direction()));
+            sb.append(resetStyle);
         }
         sb.append("\n");
 
@@ -165,24 +203,41 @@ public class ArenaRenderer {
         out.flush();
     }
 
-    private char cellAt(Position pos, Map<String, RoverState> allStates) {
-        // Check if any rover is currently at this position
+    private String cellAt(Position pos, Map<String, RoverState> allStates, String reset) {
+        // Check if any rover is at this position
         for (Map.Entry<String, RoverState> entry : allStates.entrySet()) {
             if (entry.getValue().position().equals(pos)) {
-                return labels.getOrDefault(entry.getKey(), '?');
+                String id = entry.getKey();
+                char label = labels.getOrDefault(id, '?');
+                int index = roverIndices.getOrDefault(id, 0);
+                String color = theme.roverColor(index);
+                String symbol = theme.roverSymbol(entry.getValue().direction());
+                return colorWrap(color, String.valueOf(label), reset);
             }
         }
         // Check obstacles
         if (obstacles.contains(pos)) {
-            return '#';
+            return colorWrap(theme.obstacleColor(), theme.obstacleSymbol(), reset);
         }
-        // Check trails (later rover trail overwrites earlier if overlapping)
-        char trailChar = '.';
-        for (Map<Position, Character> trail : trails.values()) {
+        // Check trails — later rover trail overwrites earlier if overlapping
+        for (Map.Entry<String, Map<Position, Direction>> trailEntry : trails.entrySet()) {
+            Map<Position, Direction> trail = trailEntry.getValue();
             if (trail.containsKey(pos)) {
-                trailChar = trail.get(pos);
+                String id = trailEntry.getKey();
+                int index = roverIndices.getOrDefault(id, 0);
+                String color = theme.pathColor(0, theme.gradientWindow());
+                char trailLabel = Character.toLowerCase(labels.getOrDefault(id, '?'));
+                return colorWrap(color, String.valueOf(trailLabel), reset);
             }
         }
-        return trailChar;
+        return theme.emptySymbol();
+    }
+
+    /** Wraps content with ANSI color + reset, or returns bare content if color is empty. */
+    private static String colorWrap(String color, String content, String reset) {
+        if (color.isEmpty()) {
+            return content;
+        }
+        return color + content + reset;
     }
 }
