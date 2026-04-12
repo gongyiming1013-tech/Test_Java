@@ -1,0 +1,76 @@
+/*
+ * Theme variables mirroring V5c terminal themes.
+ * Swap theme by changing the body class (theme-modern / theme-minimal / theme-mono).
+ */
+
+.theme-modern {
+  --bg:              #0f1419;
+  --bg-panel:        #1a1f2e;
+  --fg:              #e6e6e6;
+  --fg-dim:          #8a9199;
+  --border:          #3a4555;
+  --accent:          #51d0ff;
+  --accent-strong:   #00b4ff;
+  --obstacle:        #c23030;
+  --trail-bright:    #51d0ff;
+  --trail-dim:       #3a4555;
+  --blocked:         #ff4444;
+  --progress:        #3aa357;
+
+  --rover-0: #51d0ff;  /* cyan */
+  --rover-1: #ff4444;  /* red */
+  --rover-2: #46d36e;  /* green */
+  --rover-3: #e6d84a;  /* yellow */
+  --rover-4: #c44ce6;  /* magenta */
+  --rover-5: #ff8c3a;  /* orange */
+  --rover-6: #4a7bff;  /* blue */
+  --rover-7: #ffffff;  /* white */
+}
+
+.theme-minimal {
+  --bg:              #f6f6f6;
+  --bg-panel:        #eeeeee;
+  --fg:              #333333;
+  --fg-dim:          #888888;
+  --border:          #bbbbbb;
+  --accent:          #555555;
+  --accent-strong:   #333333;
+  --obstacle:        #888888;
+  --trail-bright:    #555555;
+  --trail-dim:       #cccccc;
+  --blocked:         #c89b2c;
+  --progress:        #7a9b7a;
+
+  --rover-0: #444444;
+  --rover-1: #c06c6c;
+  --rover-2: #7a9b7a;
+  --rover-3: #c8b35a;
+  --rover-4: #9b7ac0;
+  --rover-5: #c89b6c;
+  --rover-6: #6c8cc0;
+  --rover-7: #999999;
+}
+
+.theme-mono {
+  --bg:              #ffffff;
+  --bg-panel:        #ffffff;
+  --fg:              #000000;
+  --fg-dim:          #666666;
+  --border:          #000000;
+  --accent:          #000000;
+  --accent-strong:   #000000;
+  --obstacle:        #000000;
+  --trail-bright:    #666666;
+  --trail-dim:       #999999;
+  --blocked:         #000000;
+  --progress:        #000000;
+
+  --rover-0: #000000;
+  --rover-1: #000000;
+  --rover-2: #000000;
+  --rover-3: #000000;
+  --rover-4: #000000;
+  --rover-5: #000000;
+  --rover-6: #000000;
+  --rover-7: #000000;
+}

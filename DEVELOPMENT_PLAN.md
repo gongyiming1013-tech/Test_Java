@@ -798,6 +798,538 @@ Add `--theme` CLI flag.
 | Backward compatibility | Non-visual mode unchanged | All V0–V4 tests pass; no `--visual` = same output as before |
 | CLI flags | `--visual`, `--delay`, `--theme` parsing | `--visual` alone, `--visual --delay 200`, `--theme modern/minimal/mono`, `--visual` with grid/obstacles |
 
+---
+
+### V6 — Interactive Web UI (Planned)
+
+**Goal:** Replace CLI-driven configuration with an interactive browser-based UI. Users launch a local web server (`java -jar rover.jar --web`), open `http://localhost:8080`, and configure grids, obstacles, rovers, and commands through point-and-click controls. Execution streams back to the browser in real time. The architecture is designed so that future server deployment with multi-user sessions is a natural extension, not a rewrite.
+
+Split into four phases:
+- **V6a** — Web server + REST API + static frontend (config + synchronous run).
+- **V6b** — Real-time event streaming via Server-Sent Events (SSE), animated Canvas rendering.
+- **V6c** — Interactive editing: click-to-place obstacles, click-to-add rovers, pause/resume/step controls, theme switching.
+- **V6d** — Session isolation groundwork: each browser has its own independent arena; TTL-based cleanup. (Foundation for future multi-user shared rooms in V7.)
+
+#### Problem Analysis
+
+The V5 CLI is powerful but unwelcoming for non-technical users:
+1. **Configuration ergonomics** — grid size, obstacles, and multi-rover specs must be encoded as fragile flag strings (`--rover "R1:0,0,N:MMRMM"`). Users must memorize the format, escape quotes, and iterate by retyping entire commands.
+2. **Discoverability** — there is no way to visually see an empty grid and *place* an obstacle at coordinate (3, 4). Users must mentally translate spatial intent into flag syntax.
+3. **Iteration speed** — to tweak a rover's starting direction or add one more obstacle, the user rebuilds the full command and re-runs from scratch.
+4. **Future multi-user** — any further UI investment should be on a platform (web) that generalizes to server deployment without rewrite. CLI + terminal UI cannot become multi-user without abandoning the UI layer entirely.
+
+A browser-based UI solves all four: visual grid editing, click-to-configure, sub-second iteration via fetch/run cycle, and the HTTP server layer doubles as the future multi-user backend.
+
+#### Strategy Comparison
+
+**UI platform:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| Terminal TUI (Lanterna/JLine) | Interactive text-mode UI with forms | Stays in terminal; lightweight | Limited interaction (no true click/drag); no multi-user path | Rejected |
+| JavaFX / Swing desktop app | Native GUI window launched from JAR | Rich controls; no browser needed | Desktop-only; multi-user requires full rewrite with separate network layer | Rejected |
+| **Web UI (HTTP server + browser)** | Embedded HTTP server serves static assets + REST/SSE; browser renders | Natural path to multi-user; rich rendering via Canvas/SVG; zero install for end users; localhost works offline | Extra components (server + frontend); small dependency footprint | **Adopted** |
+
+**HTTP framework:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| JDK `com.sun.net.httpserver` | Built-in HTTP server | Zero dependencies | Very low-level; no routing, no SSE helpers, no middleware; awkward for anything beyond toy examples | Rejected |
+| Spark Java | Minimal micro-framework | Small API | Stagnant maintenance; weaker SSE/WebSocket story | Rejected |
+| Jetty standalone | Servlet container | Battle-tested | Heavier; verbose config | Rejected |
+| **Javalin** | Modern Kotlin/Java micro-framework on top of Jetty | Clean API; built-in SSE and WebSocket; active maintenance (v6.x); small footprint (~700KB with transitive deps); production-grade (Jetty underneath) | One new dependency | **Adopted** |
+
+**Real-time event transport:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| Polling | Browser fetches `/state` on a timer | Simplest | Laggy; wastes bandwidth; missed frames on fast execution | Rejected as primary (still used as V6a fallback) |
+| **Server-Sent Events (SSE)** | Server streams events over HTTP; browser uses native `EventSource` | One-way server→client is exactly our need; auto-reconnect; native browser API; works through proxies | Server→client only (but we don't need client→server streaming in V6) | **Adopted for V6b** |
+| WebSocket | Bidirectional full-duplex | Powerful; bidirectional | Overkill for one-way event streaming; more complex handshake and lifecycle | Deferred to V7 (needed for multi-user shared rooms) |
+
+**Frontend framework:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| **Vanilla ES modules** | Plain HTML/CSS/JS with native `import`/`export`, no build step | Zero build tooling; zero npm; direct debugging; small surface area for a single-page visualization | Requires discipline to avoid spaghetti; no virtual DOM ergonomics if it grows large | **Adopted for V6** — sufficient for single-page app; structured layering leaves a clean migration path |
+| React / Vue | Component framework | Rich ecosystem; great for large apps | Build toolchain overhead; npm dependency; overkill for current scope | Deferred — possible migration if frontend grows |
+| Svelte | Compile-to-vanilla framework | Compiled output is lean | Still requires build step; extra learning | Rejected |
+
+**JSON mapping:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| **Jackson** | Industry-standard Java JSON library | First-class Javalin integration; record support; streaming API if needed later | Extra transitive deps (jackson-core, jackson-databind) | **Adopted** — standard choice with Javalin |
+| Gson | Google's JSON library | Simpler | Less idiomatic with Javalin; would need custom `JsonMapper` wiring | Rejected |
+| Hand-rolled | Manual JSON building | No dependency | Tedious; error-prone; no schema validation | Rejected |
+
+**Session & state model:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| Stateless (config sent per run) | Browser sends full config on each run | No server state | Can't stream events incrementally; no pause/resume; makes V6c/d hard | Rejected |
+| **Server-side `Session` with ID** | Each browser has a unique session ID (cookie); server holds `Session` → `Arena` mapping | Enables SSE streaming, pause/resume, future multi-user; clean separation | Requires session lifecycle management (TTL cleanup) | **Adopted** |
+| Persistent DB-backed sessions | Sessions in SQL/Redis | Survive server restart | Over-engineered for current scope | Deferred |
+
+#### Design Discussion
+
+- **Deployment model:** Single self-contained JAR. `java -jar rover.jar --web` starts Javalin on port 8080 (configurable via `--port`), serves static assets from the JAR's classpath, and opens REST + SSE endpoints. No install, no Node, no build step for the user.
+- **Domain reuse:** V0–V5 core classes (`Arena`, `Rover`, `Environment`, `ActionParser`, `RoverListener`, `RoverEvent`) are used **unchanged**. V6 adds only a thin web layer on top. The `RoverListener` pattern is exactly what we need — we register an `SseRoverListener` that forwards events to connected browser clients.
+- **Backward compatibility:** CLI modes (single-rover, arena, visual, verbose) remain fully functional. The `--web` flag is a new mode, orthogonal to the others. All existing V0–V5 tests stay green.
+- **Frontend layering (critical for future extensibility):** Even with vanilla JS, the code is strictly layered to enable a future React/Vue migration without rewriting business logic:
+  ```
+  public/
+  ├── index.html                 — single page shell
+  ├── css/
+  │   ├── base.css               — layout, typography
+  │   └── themes.css             — CSS variables per theme (Modern/Minimal/Mono) mirroring V5c
+  └── js/
+      ├── main.js                — app entry; wires modules together
+      ├── api/
+      │   ├── client.js          — REST + SSE client (pure data layer)
+      │   └── types.js           — JSDoc DTO definitions
+      ├── state/
+      │   └── store.js           — observable store (subscribe/publish pattern)
+      ├── ui/
+      │   ├── controls.js        — form inputs (grid size, rover list)
+      │   ├── canvas.js          — arena renderer (draw grid, rovers, trails, obstacles)
+      │   ├── toolbar.js         — run/pause/step/theme controls
+      │   └── editor.js          — click-to-place obstacle / add rover (V6c)
+      └── util/
+          └── events.js          — simple event emitter
+  ```
+  Migration path to React/Vue: replace the `ui/` module one file at a time; `api/` and `state/` stay intact. Canvas rendering is framework-agnostic.
+- **Canvas over SVG:** Canvas has better performance for animated grids and a simpler programming model for redraw-on-event. SVG would be nice for accessibility but overkill.
+- **Theme parity with V5c:** The three V5c themes (`modern`, `minimal`, `mono`) are mirrored as CSS theme classes so the web UI matches the terminal look. Theme switch is instant (CSS variable change, no reload).
+- **Session lifecycle:** Each browser hits `POST /api/session` on first load and receives a UUID. The UUID is stored in `sessionStorage` (tab-scoped) so opening a new tab creates a fresh arena. Sessions have a 30-minute idle TTL; a `ScheduledExecutorService` reaps expired sessions.
+- **Concurrency model:** `SessionManager` uses a `ConcurrentHashMap`. Each `Session` serializes its own execution on a single-threaded executor — one run at a time per session. Multiple sessions run truly concurrently. This matches the existing thread-safety guarantees of `Rover` and `Arena`.
+- **SSE scope:** Each session has a `CopyOnWriteArrayList<SseClient>` of connected SSE streams. Events are fan-out: one execution → N subscribers (typically 1, but ready for multi-user in V6d/V7). Events are serialized to JSON on the emitting thread so listeners never block the rover.
+- **Graceful shutdown:** JVM shutdown hook closes Javalin cleanly, flushes SSE streams with a `complete` event, and releases the port.
+- **Security (MVP scope):** V6 is localhost-only. No auth, no CORS, no HTTPS. A `--bind` flag can later expose it to LAN. Full auth/TLS is a V7 concern when we deploy to a real server.
+
+#### Canvas Layout, Legend, and Viewport
+
+The V6a page is a single screen divided into three logical regions:
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  Header: App title + theme selector                           │
+├────────────────────────────┬───────────────────────────────────┤
+│  Canvas (600×600 px)       │  Config panel                     │
+│    - axis labels           │    - Grid size inputs             │
+│    - grid cells            │    - Conflict policy              │
+│    - rovers + trails       │    - Obstacle list                │
+│    - obstacles             │    - Rover list (add/delete)      │
+│                            │    - Parallel toggle              │
+│  Legend (below canvas)     │    - Run / Reset buttons          │
+│    - Symbols row           │                                   │
+│    - Colors row (dynamic)  │                                   │
+│    - Grid info row         │                                   │
+├────────────────────────────┴───────────────────────────────────┤
+│  Status bar (bottom): state + last run + stats                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+**Legend block (below the canvas):** A fixed three-row panel that reflects the current state:
+
+| Row | Content | Source |
+|-----|---------|--------|
+| **Symbols** | `▲▼◄►` (rover facing), `█` (obstacle), `·` (trail) — static text with theme-colored glyphs | Hard-coded, rendered once |
+| **Colors** | One dot+label per active rover (e.g., `● R1  ● R2  ● R3`) + obstacle color + trail color | Generated dynamically from the rover list in the store; updates when rovers are added/removed |
+| **Grid info** | Mode (Bounded/Unbounded), dimensions (`10 × 10` or `∞`), viewport (`x[0..9] y[0..9]`), origin note (`Origin (0,0) = bottom-left`) | Derived from current config + last snapshot |
+
+**Viewport strip (above the canvas):** A thin single-line label showing `Viewport: (xMin, yMin) – (xMax, yMax)`. For bounded mode this matches the grid; for unbounded mode it reflects the auto-fit range. This makes it obvious *which part of the world* the canvas is currently showing.
+
+**Status bar (bottom of page):** Three lines:
+1. `Status: ready | running | done | error: <message>`
+2. `Last run: R1 → (x,y) DIR   R2 → (x,y) DIR   ...`
+3. `Stats: Steps: N    Blocked: N    Duration: Nms    Rovers: N    Obstacles: N`
+
+#### Grid Sizing & Auto-Fit Viewport (Unbounded Mode)
+
+Grid dimensions are **optional** on the frontend. The backend accepts three states:
+
+| `width` | `height` | Resulting environment | Viewport behavior |
+|---------|----------|-----------------------|-------------------|
+| `null` | `null` | `UnboundedEnvironment` | Auto-fit based on rovers + trails + obstacles |
+| `≥ 1` | `≥ 1` | `GridEnvironment(w, h)` | Fixed at `x[0..w-1] y[0..h-1]` |
+| `null` | `≥ 1` | **400 Bad Request** | `INVALID_GRID`: both dimensions required (or both empty) |
+| `≥ 1` | `null` | **400 Bad Request** | Same |
+| `≤ 0` | *any* | **400 Bad Request** | `INVALID_GRID`: dimensions must be positive |
+
+**Auto-fit viewport calculation (unbounded mode only):**
+
+```
+rovers         = all rover start positions + current positions + trail positions
+obstacles      = all obstacle positions
+points         = rovers ∪ obstacles ∪ {(0, 0)}        // origin always included
+bbox           = min/max of points.x and points.y
+padding        = 2 cells on each side
+minSize        = 10 × 10 (viewport never smaller than this, centered on bbox)
+viewport       = expand(bbox, padding).clampMin(minSize)
+```
+
+**When recomputed:**
+- On session creation (before any config) → default viewport `x[-5..4] y[-5..4]`
+- On config submit → recomputed from rover start positions + obstacles
+- On run completion → recomputed from full trails + final positions
+
+**V6a uses static auto-fit**: viewport is recomputed *once* per request (after configure or after run). The canvas redraws fully. V6b will add "smooth expansion" during live animation.
+
+**Canvas cell sizing:**
+- Canvas has fixed pixel dimensions (600 × 600 px by default).
+- `cellSize = floor(600 / max(viewportWidth, viewportHeight))`.
+- Minimum cell size: 12 px (below this, symbols become unreadable).
+- If the computed cell size falls below 12, the canvas shows an overflow hint and renders only the top-left region that fits — user should shrink the grid or narrow the rover trail range. (Edge case, unlikely in normal usage.)
+
+**Server-side viewport computation:** The viewport is computed on the server inside `ViewportCalculator` and included in every `SessionSnapshot`. This centralizes the logic (single source of truth), avoids duplicating it in JS, and keeps the frontend purely presentational.
+
+#### Bug Fix: Frontend Input Cursor Loss
+
+**Root cause:** `renderControls()` in `controls.js` tears down and rebuilds the entire rover card DOM (`el.roverList.innerHTML = ""` + `appendChild(buildRoverCard(...))`) on *every* store update. Since every keystroke in the commands input fires an `input` event → store update → re-render, the `<input>` element the user is typing in is destroyed and replaced with a fresh one, causing focus and cursor position to be lost.
+
+Same pattern exists for the obstacle list (`el.obstacleList.innerHTML = ""`), though it's less noticeable because obstacles have no text inputs.
+
+**Fix approach — structural vs value re-renders:**
+
+Split `renderControls` into two paths:
+
+| Trigger | DOM action | Example |
+|---------|-----------|---------|
+| **Structural change** — rover count or IDs changed, obstacle count changed | Tear down and rebuild affected section | User clicks "+ Add rover" or "×" delete |
+| **Value change** — commands, position, direction of an existing rover changed | Update existing DOM element values in-place; **skip elements that have focus** (the user is actively typing in them) | User types "M" in the commands box |
+
+Implementation:
+1. Track `lastRoverIds` (array of rover ID strings) across renders.
+2. On each render, compare current IDs to `lastRoverIds`.
+3. If IDs match → call `updateRoverCardValues()` which iterates existing card DOM and patches values, skipping `document.activeElement`.
+4. If IDs differ → full rebuild (same as current behavior), then update `lastRoverIds`.
+5. Same pattern for obstacles: track `lastObstacleCount`, only rebuild if count changed.
+
+This eliminates cursor loss while keeping the UI reactive to all state changes.
+
+#### Feature: Continue Run (Incremental Execution)
+
+**Problem:** Currently `Session.run()` re-parses and re-executes commands on a freshly built Arena. After a run completes, the user cannot send new commands that continue from the rovers' current positions — they must Reset and start over.
+
+**Desired behavior:**
+
+| Action | What happens |
+|--------|-------------|
+| **Configure** | Builds the Arena with rovers at their configured starting positions. Resets trails, stats. |
+| **Run** (first time) | Parses the commands currently in each rover's input box. Executes them on the Arena. Rovers stop at their final positions. Trails and stats are accumulated. |
+| **Run** (subsequent) | User edits command boxes (new commands). Clicks Run again. New commands are parsed and executed **from the rovers' current positions** — the Arena is NOT rebuilt. Trails and stats are **appended** (not replaced). |
+| **Reset** | Rebuilds the Arena from the original config — rovers return to their starting positions, trails and stats are cleared. |
+
+**Strategy comparison:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|----------|-------------|------|------|---------|
+| Rebuild Arena on every run | Current behavior | Simple | Cannot continue from current position | Current — being replaced |
+| **Reuse Arena, only parse new commands** | Arena persists between runs; `run()` only feeds new commands to existing rovers | Natural "continue" semantics; trails accumulate; clean separation of configure vs run | Need to handle rover state carefully; "Reset to start" must be explicit | **Adopted** |
+| Two buttons: "Run" + "Run from start" | User chooses which mode | Maximum flexibility | Cluttered UI; confusing for simple use case | Rejected |
+
+**Backend changes:**
+
+| Class | Change |
+|-------|--------|
+| `Session.run()` | No longer rebuilds Arena. Reads current commands from the `ArenaConfig.rovers`, parses them, executes on the **existing** Arena. Listeners accumulate trails (append, not replace). Stats from each run are added to the running totals. |
+| `Session.configure()` | Unchanged — always rebuilds the Arena from scratch. Resets trails and stats. This is the "hard reset". |
+| `Session.resetToStart()` | **New method.** Rebuilds the Arena from the stored config (same as `configure(config)` but without requiring the frontend to re-send the config). Called by "Reset" button. |
+| `RoverController` | New endpoint: `POST /api/session/{id}/reset` — calls `session.resetToStart()` and returns the fresh snapshot. |
+
+**Frontend changes:**
+
+| Component | Change |
+|-----------|--------|
+| `toolbar.js` — Run button | After a successful run, commands inputs are NOT cleared. User can edit them and click Run again to continue. |
+| `toolbar.js` — Reset button | Calls `POST /api/session/{id}/reset` instead of `DELETE` + `POST /api/session` + `PUT /config`. |
+| `canvas.js` | Trail rendering already accumulates (no change needed on canvas side). |
+| `statusBar.js` | Stats should show **cumulative** totals (all runs combined). Add a "Runs: N" counter. |
+
+**REST endpoint additions:**
+
+| Method | Path | Behavior |
+|--------|------|----------|
+| `POST` | `/api/session/{id}/reset` | Rebuilds Arena from stored config. Returns 200 + fresh snapshot. 404 if session missing. 409 if currently running. |
+
+**Example user flow:**
+
+```
+1. Configure: 10×10 grid, R1 at (0,0) facing N
+2. Commands: "MMR" → Run → R1 ends at (0,2) facing E. Trails: [(0,0),(0,1),(0,2)]
+3. Commands: "MM"  → Run → R1 continues from (0,2)E → ends at (2,2) facing E. Trails: [...,(1,2),(2,2)]
+4. Commands: "LMM" → Run → R1 continues from (2,2)E → turns N → ends at (2,4). Trails: [...,(2,3),(2,4)]
+5. Reset → R1 back at (0,0) facing N. Trails cleared.
+```
+
+#### Class & Data Structure Changes
+
+##### V6a — Web Server + REST API + Static Frontend
+
+###### `WebApp` — Class (New)
+Entry point for web mode. Starts Javalin, registers routes, serves static assets.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `port` | `int` | TCP port (default 8080) |
+| `sessionManager` | `SessionManager` | Shared session store |
+| `javalin` | `Javalin` | The embedded server instance |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `start` | `void start()` | Starts the server on the configured port |
+| `stop` | `void stop()` | Stops the server cleanly |
+| `main` | `static void main(String[] args)` | CLI entry: parses `--web [--port N]`, starts the server |
+
+###### `SessionManager` — Class (New)
+Thread-safe registry of browser sessions.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `sessions` | `ConcurrentHashMap<String, Session>` | Session ID → `Session` |
+| `reaper` | `ScheduledExecutorService` | Background thread that evicts idle sessions |
+| `ttlMinutes` | `long` | Idle TTL (default 30) |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `createSession` | `Session createSession()` | Creates a new session with a UUID |
+| `getSession` | `Session getSession(String id)` | Retrieves an existing session; returns null if missing |
+| `removeSession` | `void removeSession(String id)` | Explicit cleanup |
+| `reapExpired` | `void reapExpired()` | Evicts sessions idle beyond TTL |
+| `shutdown` | `void shutdown()` | Stops the reaper and clears state |
+
+###### `Session` — Class (New)
+Per-browser state: arena, event queue, SSE subscribers, last-access timestamp.
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `id` | `String` | UUID session identifier |
+| `arena` | `Arena` | The session's Arena instance (created after config) |
+| `config` | `ArenaConfig` | Current grid/obstacle/rover configuration |
+| `trails` | `Map<String, List<Position>>` | Path trails per rover, populated by an internal `RoverListener` |
+| `stats` | `RunStats` | Most recent execution stats |
+| `lastAccess` | `volatile long` | Timestamp of most recent request (for TTL) |
+| `executor` | `ExecutorService` | Single-threaded per-session executor |
+| `subscribers` | `CopyOnWriteArrayList<SseClient>` | Connected SSE streams (used from V6b onward) |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `configure` | `void configure(ArenaConfig config)` | Validates and builds a new `Arena` from config; resets trails and stats |
+| `run` | `Future<?> run()` | Executes configured rover commands asynchronously; populates trails and stats |
+| `getSnapshot` | `SessionSnapshot getSnapshot()` | Builds a `SessionSnapshot` with current rovers, trails, auto-fit viewport, and stats |
+| `subscribe` | `void subscribe(SseClient client)` | Registers an SSE subscriber (stub in V6a; functional in V6b) |
+| `unsubscribe` | `void unsubscribe(SseClient client)` | Removes an SSE subscriber |
+| `touch` | `void touch()` | Updates `lastAccess` to now |
+
+###### `ArenaConfig` — Record (New)
+Immutable configuration submitted by the browser. `width`/`height` are nullable to support unbounded mode.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `width` | `Integer` | Grid width, or `null` for unbounded |
+| `height` | `Integer` | Grid height, or `null` for unbounded |
+| `wrap` | `boolean` | Toroidal boundary mode (ignored when width/height are null) |
+| `obstacles` | `List<PositionDto>` | Obstacle coordinates |
+| `conflictPolicy` | `String` | `"fail"` / `"skip"` / `"reverse"` |
+| `rovers` | `List<RoverSpecDto>` | Rover definitions |
+| `parallel` | `boolean` | Parallel execution mode |
+
+**Validation rules:**
+- `width` and `height` must either both be null (unbounded) or both be positive integers.
+- `conflictPolicy` must be one of the three string values (case-insensitive).
+- `rovers` must contain at least one rover.
+- Each `RoverSpecDto.direction` must be `"N"` / `"E"` / `"S"` / `"W"` (case-insensitive).
+- Each `RoverSpecDto.commands` must only contain registered command characters.
+- Rover IDs must be unique.
+
+###### `RoverSpecDto` — Record (New)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `String` | Rover identifier (e.g., "R1") |
+| `x` | `int` | Starting x coordinate |
+| `y` | `int` | Starting y coordinate |
+| `direction` | `String` | `"N"` / `"E"` / `"S"` / `"W"` |
+| `commands` | `String` | Command string (e.g., "MMRML") |
+
+###### `PositionDto` — Record (New)
+`(int x, int y)`. JSON-serializable equivalent of the domain `Position`.
+
+###### `SessionSnapshot` — Record (New)
+State summary returned by `GET /api/session/{id}/state`. Everything the frontend needs to render the canvas in one payload.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sessionId` | `String` | Session ID |
+| `config` | `ArenaConfig` | Current configuration (for UI sync) |
+| `rovers` | `Map<String, RoverStateDto>` | Current rover states keyed by ID |
+| `trails` | `Map<String, List<PositionDto>>` | Path trails per rover, in order of visitation |
+| `viewport` | `ViewportDto` | Current viewport range (bounded = grid; unbounded = auto-fit) |
+| `stats` | `RunStats` | Summary of the most recent run (or zeros if no run yet) |
+| `running` | `boolean` | Whether a run is in progress |
+
+###### `RoverStateDto` — Record (New)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `x` | `int` | Current x |
+| `y` | `int` | Current y |
+| `direction` | `String` | Facing direction (`"NORTH"` / `"EAST"` / `"SOUTH"` / `"WEST"`) |
+
+###### `ViewportDto` — Record (New)
+Describes the visible coordinate range. For bounded grids this matches the grid dimensions; for unbounded grids this is computed by `ViewportCalculator`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `xMin` | `int` | Inclusive minimum x |
+| `yMin` | `int` | Inclusive minimum y |
+| `xMax` | `int` | Inclusive maximum x |
+| `yMax` | `int` | Inclusive maximum y |
+
+Convenience getters: `width()` returns `xMax - xMin + 1`, `height()` returns `yMax - yMin + 1`.
+
+###### `RunStats` — Record (New)
+Summary metrics for the most recent execution, shown in the status bar.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `totalSteps` | `int` | Total actions executed across all rovers |
+| `blockedCount` | `int` | Number of blocked moves across all rovers |
+| `durationMs` | `long` | Wall-clock execution time in milliseconds |
+| `roverCount` | `int` | Number of rovers in the session |
+| `obstacleCount` | `int` | Number of obstacles in the session |
+
+###### `ViewportCalculator` — Class (New)
+Pure static helper that computes viewports. Centralizes the auto-fit logic so server and potential future clients share one implementation.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `forBoundedGrid` | `static ViewportDto forBoundedGrid(int width, int height)` | Returns `(0, 0, width-1, height-1)` |
+| `autoFit` | `static ViewportDto autoFit(Collection<Position> points)` | Bounding box + 2-cell padding, enforcing a 10×10 minimum centered on the bbox; includes origin `(0,0)` as a sentinel |
+
+###### `ArenaConfigMapper` — Class (New)
+Pure static helper that validates an `ArenaConfig` DTO and builds the corresponding domain objects.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `buildEnvironment` | `static Environment buildEnvironment(ArenaConfig config)` | Returns `UnboundedEnvironment` (both dims null) or `GridEnvironment` (both dims set); throws `ConfigValidationException` on partial/invalid dims |
+| `buildConflictPolicy` | `static ConflictPolicy buildConflictPolicy(String name)` | Case-insensitive `fail`/`skip`/`reverse`; throws on unknown |
+| `buildArena` | `static Arena buildArena(ArenaConfig config)` | Creates `Arena`, registers each rover, parses commands; throws on any validation failure |
+| `parseDirection` | `static Direction parseDirection(String s)` | `N`/`E`/`S`/`W` → enum; throws on unknown |
+
+###### `ConfigValidationException` — Class extends `IllegalArgumentException` (New)
+Thrown by `ArenaConfigMapper` when validation fails. Carries a short machine-readable `code` (e.g., `INVALID_GRID`, `UNKNOWN_DIRECTION`, `DUPLICATE_ROVER_ID`) plus a human-readable message.
+
+###### `RoverController` — Class (New)
+Javalin route handlers. Stateless; receives `SessionManager` via constructor.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `createSession` | `void createSession(Context ctx)` | `POST /api/session` → returns `{sessionId}` |
+| `configure` | `void configure(Context ctx)` | `PUT /api/session/{id}/config` → validates and stores config |
+| `run` | `void run(Context ctx)` | `POST /api/session/{id}/run` → triggers async execution |
+| `getState` | `void getState(Context ctx)` | `GET /api/session/{id}/state` → returns `SessionSnapshot` |
+| `deleteSession` | `void deleteSession(Context ctx)` | `DELETE /api/session/{id}` |
+
+###### `WebError` — Record (New)
+Uniform error response: `{code, message}`. Returned on validation errors, missing sessions, etc.
+
+###### `App` — Modified
+Add `--web` and `--port` flags. When `--web` is present, delegate to `WebApp.main()`; otherwise existing CLI behavior.
+
+##### V6b — Real-Time Event Streaming (SSE)
+
+###### `SseRoverListener` — Class implements `RoverListener` (New)
+Bridges domain events to SSE subscribers. One instance per session (or per rover inside a session).
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `session` | `Session` | The owning session (for subscriber fan-out) |
+| `roverId` | `String` | ID of the rover this listener watches |
+| `jsonMapper` | `JsonMapper` | Jackson mapper for event serialization |
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `onStep` | `void onStep(RoverEvent event)` | Serialize to JSON, push to all session subscribers as SSE event `step` |
+| `onComplete` | `void onComplete(RoverState finalState)` | Push SSE event `complete` |
+
+###### `RoverEventDto` — Record (New)
+JSON-friendly projection of `RoverEvent`.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `roverId` | `String` | Which rover |
+| `from` | `RoverStateDto` | Previous state |
+| `to` | `RoverStateDto` | New state |
+| `action` | `String` | Action name (e.g., "MoveForward") |
+| `stepIndex` | `int` | Step index |
+| `totalSteps` | `int` | Total steps |
+| `blocked` | `boolean` | Blocked flag |
+
+###### `RoverController` — Modified
+Add SSE endpoint.
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `subscribeEvents` | `void subscribeEvents(Context ctx)` | `GET /api/session/{id}/events` → opens SSE stream, subscribes to session |
+
+##### V6c — Interactive Editing (Frontend)
+
+No new Java classes. Frontend-only changes:
+- `ui/editor.js` — click handlers for placing obstacles, adding rovers, setting direction
+- `ui/toolbar.js` — run/pause/step/reset/theme buttons
+- `ui/canvas.js` — drag-select for multi-obstacle placement, highlight hovered cell
+- `state/store.js` — undo/redo for edits (V6c polish)
+
+Backend gains one new REST action: `POST /api/session/{id}/pause` and `POST /api/session/{id}/resume`. This requires a small addition to `Session.run()` for cooperative pause/resume (a `volatile boolean paused` flag checked in the step loop).
+
+##### V6d — Session Isolation (Multi-User Groundwork)
+
+Mostly a hardening phase, not new classes:
+- `SessionManager.reapExpired()` exercised by tests with injectable `Clock`
+- Concurrent session stress tests (many sessions running in parallel)
+- Per-session isolation tests (session A cannot affect session B)
+- Optional `--bind` flag on `WebApp` to expose beyond localhost (default stays `127.0.0.1`)
+
+#### Test Plan
+
+| Dimension | Covers | Key Scenarios |
+|-----------|--------|---------------|
+| **V6a — Web server startup** | `WebApp` lifecycle | Start on random port, verify listening, stop cleanly; double-start rejected; port conflict handled |
+| **V6a — Session lifecycle** | `SessionManager`, `Session` | Create session returns UUID, get by ID, remove, ID not found returns null, TTL eviction via injected clock |
+| **V6a — REST: createSession** | `POST /api/session` | Returns 200 with JSON `{sessionId}`; multiple calls return distinct IDs |
+| **V6a — REST: configure** | `PUT /api/session/{id}/config` | Valid config accepted; missing fields rejected with 400; invalid direction rejected; grid size validation; unknown session returns 404 |
+| **V6a — REST: run** | `POST /api/session/{id}/run` | Triggers execution; returns 202 accepted; run without config returns 409; concurrent run on same session returns 409 |
+| **V6a — REST: getState** | `GET /api/session/{id}/state` | Returns current rover positions; reflects config; running flag correct |
+| **V6a — REST: deleteSession** | `DELETE /api/session/{id}` | Removes session; subsequent GET returns 404 |
+| **V6a — JSON mapping** | DTO serialization | `ArenaConfig`, `RoverSpecDto`, `SessionSnapshot` round-trip via Jackson; unknown fields ignored; missing required fields rejected |
+| **V6a — Config → Arena** | `ArenaConfigMapper` | Bounded grid, unbounded grid (null dims), all conflict policies, direction parsing, rover ID uniqueness, duplicate ID rejected, invalid direction rejected, partial dims (`INVALID_GRID`) rejected, empty rover list rejected, invalid commands rejected |
+| **V6a — Viewport auto-fit** | `ViewportCalculator` | Single point → 10×10 min window centered on it; multiple points → bounding box + 2 padding; includes `(0,0)` origin; empty input → default 10×10 centered on origin; bounded grid → `(0,0)–(w-1,h-1)` exactly |
+| **V6a — Session snapshot** | `Session.getSnapshot()` | Contains config, rovers, trails, viewport, stats, running flag; trails match execution order; stats reflect last run; viewport auto-fit in unbounded mode; bounded mode viewport equals grid |
+| **V6a — Session trail tracking** | `Session` internal listener | Each rover's trail populated during run in order of positions visited; reset on re-configure |
+| **V6a — End-to-end** | Full REST flow | Create → configure → run → state → delete; verify final positions, trails, viewport, and stats match expected |
+| **V6a — Continue Run** | Incremental execution | Run → change commands → Run again → verify second run starts from first run's endpoint; trails accumulate; stats accumulate; Reset returns rovers to start |
+| **V6a — Reset endpoint** | `POST /reset` | Reset restores starting positions and clears trails/stats; Reset on unconfigured session returns 409; Reset while running returns 409 |
+| **V6a — Input cursor stability** | Frontend controls | Rapid typing in commands box does not lose cursor; add/remove rover rebuilds cards; changing rover values in-place does not rebuild DOM |
+| **V6a — Static assets** | Javalin static serving | `GET /` returns `index.html`; CSS/JS served with correct MIME type; 404 for missing files |
+| **V6a — Error responses** | `WebError` | Consistent error envelope; validation errors carry field name; unknown session returns uniform error |
+| **V6a — `--web` CLI flag** | `App` integration | `--web` starts server; `--web --port 9090` uses custom port; without `--web` CLI behavior unchanged |
+| **V6b — SSE subscription** | `GET /events` | Open stream, receive `step` events in order, receive final `complete` event, stream closes cleanly |
+| **V6b — SseRoverListener** | Event forwarding | `onStep` emits JSON to all subscribers; `onComplete` emits final event; multiple subscribers all receive events |
+| **V6b — Event JSON format** | `RoverEventDto` | Field names match frontend expectations; `blocked` flag preserved; action name stripped of "Action" suffix |
+| **V6b — Fast execution** | Timing edge case | Very fast (delay=0) runs deliver all events in order without loss |
+| **V6b — Subscription lifecycle** | Connect/disconnect | Subscriber added/removed correctly; closed stream doesn't throw when events fire; graceful server shutdown flushes streams |
+| **V6c — Pause/resume** | `Session.run()` cooperative pause | Pause between steps, resume continues, reset clears state; pause on completed run is no-op |
+| **V6c — Frontend smoke tests** | Manual checklist | Grid rendered at correct size, click places obstacle, add rover button creates new form row, run button animates rovers, theme switch changes CSS variables |
+| **V6d — Session isolation** | Cross-session safety | Two sessions run concurrently with different configs; events from session A only go to session A subscribers; deleting session A does not affect session B |
+| **V6d — TTL cleanup** | `SessionManager.reapExpired` | Sessions idle beyond TTL are removed; `touch()` extends lifetime; reaper thread runs on schedule |
+| **V6d — Concurrent sessions stress** | Many parallel sessions | 20 sessions running simultaneously without state leakage; thread-safety of `SessionManager` verified |
+| **Backward compatibility** | All existing modes | V0–V5 CLI modes unchanged; all existing tests pass unmodified; new tests additive |
+| **Coverage** | Branch coverage | 95%+ branch coverage maintained with Jacoco verification |
+
+---
+
 ## Roadmap & Implementation
 
 ### V0 (MVP) — Completed
@@ -907,3 +1439,103 @@ Add `--theme` CLI flag.
 - [x] Graceful degradation: auto-fallback to `MonoTheme` when terminal lacks 256-color support
 - [x] Test suite: AnsiStyle output, Theme contract (all 3 implementations), GridFrame borders, StatusBar rendering, gradient trail, flicker-free rendering, blocked flash, theme selection + auto-detect, multi-rover colors, MonoTheme backward compatibility
 - [x] Coverage verification (maintain 95%+ branch coverage)
+
+### V6a — Web Server + REST API + Static Frontend
+
+**Scope:** Introduce `java -jar rover.jar --web [--port N]` mode. Embed a Javalin HTTP server that serves a vanilla HTML/CSS/JS single-page frontend and exposes REST endpoints for session creation, arena configuration, synchronous execution, and state retrieval. The frontend displays a Canvas-based grid, form-based configuration, and a "Run" button that submits config and renders the final state. No real-time animation yet — V6a validates the full stack end-to-end. All V0–V5 CLI modes remain unchanged.
+
+- [ ] Add Javalin + Jackson dependencies to `pom.xml`
+- [ ] `WebApp`: Javalin server lifecycle, static file serving from classpath, graceful shutdown hook
+- [ ] `SessionManager`: thread-safe session registry with `ConcurrentHashMap`; TTL reaper via `ScheduledExecutorService`; injectable `Clock` for testing
+- [ ] `Session`: per-session `Arena`, config, single-threaded executor, trail tracking via internal `RoverListener`, stats accumulation, `touch()` TTL tracking
+- [ ] DTOs (records): `ArenaConfig` (nullable width/height), `RoverSpecDto`, `PositionDto`, `SessionSnapshot`, `RoverStateDto`, `ViewportDto`, `RunStats`, `WebError`
+- [ ] `ViewportCalculator`: static helpers for bounded and auto-fit viewport computation (origin-inclusive, 2-cell padding, 10×10 min)
+- [ ] `ArenaConfigMapper`: DTO validation + mapping to `Environment` / `Arena`, with `ConfigValidationException` for partial/invalid configs
+- [ ] `ConfigValidationException`: carries `code` + message, thrown by mapper
+- [ ] `RoverController`: REST handlers for `POST /api/session`, `PUT /config`, `POST /run`, `GET /state`, `DELETE`
+- [ ] Error handling: `ConfigValidationException` → 400 with `WebError` envelope; missing session → 404; concurrent run → 409
+- [ ] Modify `App`: add `--web` and `--port` flags; delegate to `WebApp.main()` when `--web` is present
+- [ ] Frontend `index.html`: page shell with canvas region, viewport strip, legend block (3 rows), config form, run/reset buttons, status bar
+- [ ] Frontend `css/base.css` + `css/themes.css`: layout + CSS variables mirroring V5c themes
+- [ ] Frontend `js/api/client.js`: REST client with typed DTOs
+- [ ] Frontend `js/state/store.js`: observable store (subscribe/publish)
+- [ ] Frontend `js/ui/canvas.js`: grid rendering with dynamic cell sizing from viewport, axis labels, trails, rovers, obstacles (static; no animation in V6a)
+- [ ] Frontend `js/ui/legend.js`: dynamic legend block (symbols row, colors row, grid info row)
+- [ ] Frontend `js/ui/statusBar.js`: three-line status bar (state, last run, stats)
+- [ ] Frontend `js/ui/controls.js`: grid size inputs (allow empty for unbounded), obstacle list editor, rover form rows, conflict policy selector
+- [ ] Frontend `js/ui/toolbar.js`: run button, reset button, theme selector
+- [ ] Frontend `js/main.js`: wires API + store + UI modules
+- [ ] Test suite: `WebAppTest` (startup/shutdown), `SessionManagerTest` (lifecycle + TTL via injected clock), `SessionTest` (configure/run/snapshot/trails/stats), `ArenaConfigMapperTest` (bounded/unbounded/validation), `ViewportCalculatorTest` (bounded + auto-fit edge cases), `DtoJsonTest` (Jackson round-trip with nullable fields), `RoverControllerTest` (all REST endpoints + error paths), end-to-end `WebE2ETest` using Java `HttpClient`
+- [ ] Static asset test: Javalin serves `index.html` and JS/CSS with correct MIME types
+- [ ] Backward compatibility test: all V0–V5 CLI modes unchanged; no `--web` = old behavior
+- [ ] Manual smoke test: open browser, configure (both bounded and unbounded), run, verify final state and legend/viewport display
+- [ ] Coverage verification (maintain 95%+ branch coverage for Java code; frontend excluded from Jacoco)
+
+**V6a patch — Bug fix: input cursor loss**
+
+- [ ] Refactor `controls.js` `renderControls()`: split into structural rebuild (ID/count changes) vs in-place value update (skip focused elements)
+- [ ] Track `lastRoverIds` array; only rebuild rover card DOM when IDs change
+- [ ] Track `lastObstacleCount`; only rebuild obstacle list when count changes
+- [ ] `updateRoverCardValues()`: iterate existing card DOM, patch values, skip `document.activeElement`
+- [ ] Manual smoke test: type rapidly in commands box — cursor stays in place; add/remove rover still works
+
+**V6a patch — Feature: Continue Run (incremental execution)**
+
+- [ ] `Session.resetToStart()`: rebuilds Arena from stored config; resets trails + stats; does NOT require frontend to re-send config
+- [ ] Refactor `Session.run()`: no longer rebuild Arena; parse current commands and execute on existing Arena; append trails (not replace); accumulate stats
+- [ ] `RoverController`: add `POST /api/session/{id}/reset` endpoint → calls `session.resetToStart()`, returns fresh snapshot
+- [ ] Frontend `toolbar.js` — Run button: do NOT clear commands after run; just re-fetch snapshot
+- [ ] Frontend `toolbar.js` — Reset button: call `POST /reset` instead of delete+create+configure
+- [ ] Frontend `statusBar.js`: show cumulative stats across runs + run counter ("Runs: N")
+- [ ] Test suite: `SessionContinueRunTest` (run twice, verify second run starts from first run's endpoint; trails accumulate; stats accumulate; reset restores starting positions)
+- [ ] E2E test: `WebE2EContinueRunTest` (POST /run twice, GET /state after each, verify positions chain correctly; POST /reset, verify back to start)
+- [ ] Manual smoke test: configure → Run "MMR" → change commands to "MM" → Run → verify continues from last position → Reset → back at start
+
+### V6b — Real-Time Event Streaming (SSE)
+
+**Scope:** Add Server-Sent Events endpoint (`GET /api/session/{id}/events`) that streams `RoverEvent` data to connected browsers as each step executes. Introduce `SseRoverListener` that bridges the domain `RoverListener` interface to Javalin SSE clients. Frontend subscribes via native `EventSource` and animates the Canvas step-by-step as events arrive. Multi-rover sessions fan events out to all subscribers. Uses V5c theme colors (now as CSS variables) for per-rover coloring. Supports configurable animation delay via `delayMs` in the config.
+
+- [ ] `SseRoverListener`: implements `RoverListener`, serializes events to JSON via Jackson, pushes to session subscribers
+- [ ] `RoverEventDto`: JSON-friendly projection of `RoverEvent` with rover ID context
+- [ ] `Session.subscribe()` / `unsubscribe()`: `CopyOnWriteArrayList<SseClient>` management
+- [ ] `Session.run()`: attach `SseRoverListener` to each rover before execution; detach on completion
+- [ ] `RoverController.subscribeEvents()`: opens SSE stream, calls `session.subscribe()`, sends initial state snapshot
+- [ ] Graceful SSE cleanup: disconnect on client close, flush `complete` event on server shutdown
+- [ ] Frontend `js/api/client.js`: add `subscribeEvents(sessionId, handler)` using `EventSource`
+- [ ] Frontend `js/ui/canvas.js`: animated step-by-step rendering, trail accumulation, blocked flash
+- [ ] Frontend `js/state/store.js`: event-driven state updates; current step, total steps, blocked status
+- [ ] Per-rover CSS classes based on rover index (matches V5c `roverColor` palette)
+- [ ] Delay control: `config.delayMs` passed through to `StepExecutor` on the server side
+- [ ] Test suite: `SseRoverListenerTest` (event serialization, fan-out), `SseEndpointTest` (open stream, receive events, close), `SessionSubscriptionTest` (subscribe/unsubscribe lifecycle), fast-execution timing test (delay=0)
+- [ ] Integration test: full REST + SSE flow — create session, configure, subscribe, run, verify events arrive in order
+- [ ] Manual smoke test: watch rover animate in browser with matching V5c theme colors
+- [ ] Coverage verification (maintain 95%+ branch coverage)
+
+### V6c — Interactive Editing
+
+**Scope:** Upgrade the frontend from form-based to point-and-click configuration. Click on the canvas to toggle obstacles. Click-to-add rovers with direction picker. Pause/resume/step controls during execution. Theme switcher (Modern / Minimal / Mono) mirroring V5c. Command input per rover with live validation. Reset button to clear state. Backend gains minimal additions for cooperative pause/resume.
+
+- [ ] Frontend `js/ui/editor.js`: click handler for obstacle toggle, add-rover flow with direction picker
+- [ ] Frontend `js/ui/toolbar.js`: pause/resume/step/reset/theme buttons
+- [ ] Frontend `js/state/store.js`: undo/redo stack for edit operations
+- [ ] Frontend command input validation: inline feedback for invalid characters
+- [ ] Frontend hover highlight: show target cell on mouseover
+- [ ] Backend: `Session.pause()` / `Session.resume()` / `Session.step()` — `volatile boolean paused` flag checked in step loop
+- [ ] `RoverController`: `POST /api/session/{id}/pause`, `POST /api/session/{id}/resume`, `POST /api/session/{id}/step`
+- [ ] Test suite: `SessionPauseResumeTest` (pause mid-run, resume continues, reset clears), REST endpoint tests for pause/resume/step
+- [ ] Frontend manual smoke tests: all interactive controls work; undo/redo; theme switching
+- [ ] Coverage verification
+
+### V6d — Session Isolation (Multi-User Groundwork)
+
+**Scope:** Harden session management so that the same server process can safely host many concurrent users, each with their own independent arena. This is not multi-user *gameplay* yet (that's V7) — it's the foundation: proven isolation, TTL cleanup, and concurrent stress tests. Add optional `--bind` flag to expose beyond localhost.
+
+- [ ] `SessionManager` hardening: stress test with 20+ concurrent sessions; verify no state leakage
+- [ ] TTL cleanup test with injectable `Clock`: sessions idle beyond TTL are removed; `touch()` extends lifetime
+- [ ] Concurrent execution test: sessions A and B run simultaneously without interference
+- [ ] Subscriber isolation test: events from session A only reach session A subscribers
+- [ ] `WebApp`: add `--bind` flag (default `127.0.0.1`, override to `0.0.0.0` for LAN exposure)
+- [ ] Rate limiting (basic): max N requests per session per second to prevent abuse
+- [ ] Session limit: reject new sessions if server has >100 active (configurable)
+- [ ] Test suite: `SessionIsolationTest`, `SessionManagerStressTest`, `RateLimitTest`, `BindFlagTest`
+- [ ] Coverage verification
