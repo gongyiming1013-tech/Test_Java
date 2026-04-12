@@ -1444,52 +1444,52 @@ Mostly a hardening phase, not new classes:
 
 **Scope:** Introduce `java -jar rover.jar --web [--port N]` mode. Embed a Javalin HTTP server that serves a vanilla HTML/CSS/JS single-page frontend and exposes REST endpoints for session creation, arena configuration, synchronous execution, and state retrieval. The frontend displays a Canvas-based grid, form-based configuration, and a "Run" button that submits config and renders the final state. No real-time animation yet — V6a validates the full stack end-to-end. All V0–V5 CLI modes remain unchanged.
 
-- [ ] Add Javalin + Jackson dependencies to `pom.xml`
-- [ ] `WebApp`: Javalin server lifecycle, static file serving from classpath, graceful shutdown hook
-- [ ] `SessionManager`: thread-safe session registry with `ConcurrentHashMap`; TTL reaper via `ScheduledExecutorService`; injectable `Clock` for testing
-- [ ] `Session`: per-session `Arena`, config, single-threaded executor, trail tracking via internal `RoverListener`, stats accumulation, `touch()` TTL tracking
-- [ ] DTOs (records): `ArenaConfig` (nullable width/height), `RoverSpecDto`, `PositionDto`, `SessionSnapshot`, `RoverStateDto`, `ViewportDto`, `RunStats`, `WebError`
-- [ ] `ViewportCalculator`: static helpers for bounded and auto-fit viewport computation (origin-inclusive, 2-cell padding, 10×10 min)
-- [ ] `ArenaConfigMapper`: DTO validation + mapping to `Environment` / `Arena`, with `ConfigValidationException` for partial/invalid configs
-- [ ] `ConfigValidationException`: carries `code` + message, thrown by mapper
-- [ ] `RoverController`: REST handlers for `POST /api/session`, `PUT /config`, `POST /run`, `GET /state`, `DELETE`
-- [ ] Error handling: `ConfigValidationException` → 400 with `WebError` envelope; missing session → 404; concurrent run → 409
-- [ ] Modify `App`: add `--web` and `--port` flags; delegate to `WebApp.main()` when `--web` is present
-- [ ] Frontend `index.html`: page shell with canvas region, viewport strip, legend block (3 rows), config form, run/reset buttons, status bar
-- [ ] Frontend `css/base.css` + `css/themes.css`: layout + CSS variables mirroring V5c themes
-- [ ] Frontend `js/api/client.js`: REST client with typed DTOs
-- [ ] Frontend `js/state/store.js`: observable store (subscribe/publish)
-- [ ] Frontend `js/ui/canvas.js`: grid rendering with dynamic cell sizing from viewport, axis labels, trails, rovers, obstacles (static; no animation in V6a)
-- [ ] Frontend `js/ui/legend.js`: dynamic legend block (symbols row, colors row, grid info row)
-- [ ] Frontend `js/ui/statusBar.js`: three-line status bar (state, last run, stats)
-- [ ] Frontend `js/ui/controls.js`: grid size inputs (allow empty for unbounded), obstacle list editor, rover form rows, conflict policy selector
-- [ ] Frontend `js/ui/toolbar.js`: run button, reset button, theme selector
-- [ ] Frontend `js/main.js`: wires API + store + UI modules
-- [ ] Test suite: `WebAppTest` (startup/shutdown), `SessionManagerTest` (lifecycle + TTL via injected clock), `SessionTest` (configure/run/snapshot/trails/stats), `ArenaConfigMapperTest` (bounded/unbounded/validation), `ViewportCalculatorTest` (bounded + auto-fit edge cases), `DtoJsonTest` (Jackson round-trip with nullable fields), `RoverControllerTest` (all REST endpoints + error paths), end-to-end `WebE2ETest` using Java `HttpClient`
-- [ ] Static asset test: Javalin serves `index.html` and JS/CSS with correct MIME types
-- [ ] Backward compatibility test: all V0–V5 CLI modes unchanged; no `--web` = old behavior
-- [ ] Manual smoke test: open browser, configure (both bounded and unbounded), run, verify final state and legend/viewport display
-- [ ] Coverage verification (maintain 95%+ branch coverage for Java code; frontend excluded from Jacoco)
+- [x] Add Javalin + Jackson dependencies to `pom.xml`
+- [x] `WebApp`: Javalin server lifecycle, static file serving from classpath, graceful shutdown hook
+- [x] `SessionManager`: thread-safe session registry with `ConcurrentHashMap`; TTL reaper via `ScheduledExecutorService`; injectable `Clock` for testing
+- [x] `Session`: per-session `Arena`, config, single-threaded executor, trail tracking via internal `RoverListener`, stats accumulation, `touch()` TTL tracking
+- [x] DTOs (records): `ArenaConfig` (nullable width/height), `RoverSpecDto`, `PositionDto`, `SessionSnapshot`, `RoverStateDto`, `ViewportDto`, `RunStats`, `WebError`
+- [x] `ViewportCalculator`: static helpers for bounded and auto-fit viewport computation (origin-inclusive, 2-cell padding, 10×10 min)
+- [x] `ArenaConfigMapper`: DTO validation + mapping to `Environment` / `Arena`, with `ConfigValidationException` for partial/invalid configs
+- [x] `ConfigValidationException`: carries `code` + message, thrown by mapper
+- [x] `RoverController`: REST handlers for `POST /api/session`, `PUT /config`, `POST /run`, `GET /state`, `DELETE`, `POST /reset`
+- [x] Error handling: `ConfigValidationException` → 400 with `WebError` envelope; missing session → 404; concurrent run → 409
+- [x] Modify `App`: add `--web` and `--port` flags; delegate to `WebApp.main()` when `--web` is present
+- [x] Frontend `index.html`: page shell with canvas region, viewport strip, legend block (3 rows), config form, run/reset buttons, status bar
+- [x] Frontend `css/base.css` + `css/themes.css`: layout + CSS variables mirroring V5c themes
+- [x] Frontend `js/api/client.js`: REST client with typed DTOs
+- [x] Frontend `js/state/store.js`: observable store (subscribe/publish)
+- [x] Frontend `js/ui/canvas.js`: grid rendering with dynamic cell sizing from viewport, axis labels, trails, rovers, obstacles (static; no animation in V6a)
+- [x] Frontend `js/ui/legend.js`: dynamic legend block (symbols row, colors row, grid info row)
+- [x] Frontend `js/ui/statusBar.js`: three-line status bar (state, last run, stats)
+- [x] Frontend `js/ui/controls.js`: grid size inputs (allow empty for unbounded), obstacle list editor, rover form rows, conflict policy selector
+- [x] Frontend `js/ui/toolbar.js`: run button, reset button, theme selector
+- [x] Frontend `js/main.js`: wires API + store + UI modules
+- [x] Test suite: `WebAppTest` (startup/shutdown), `SessionManagerTest` (lifecycle + TTL via injected clock), `SessionTest` (configure/run/snapshot/trails/stats), `ArenaConfigMapperTest` (bounded/unbounded/validation), `ViewportCalculatorTest` (bounded + auto-fit edge cases), `DtoJsonTest` (Jackson round-trip with nullable fields), `RoverControllerTest` (all REST endpoints + error paths), end-to-end `WebE2ETest` using Java `HttpClient`
+- [x] Static asset test: Javalin serves `index.html` and JS/CSS with correct MIME types
+- [x] Backward compatibility test: all V0–V5 CLI modes unchanged; no `--web` = old behavior
+- [x] Manual smoke test: open browser, configure (both bounded and unbounded), run, verify final state and legend/viewport display
+- [x] Coverage verification (maintain 95%+ branch coverage for Java code; frontend excluded from Jacoco)
 
-**V6a patch — Bug fix: input cursor loss**
+**V6a patch — Bug fix: input cursor loss — Completed**
 
-- [ ] Refactor `controls.js` `renderControls()`: split into structural rebuild (ID/count changes) vs in-place value update (skip focused elements)
-- [ ] Track `lastRoverIds` array; only rebuild rover card DOM when IDs change
-- [ ] Track `lastObstacleCount`; only rebuild obstacle list when count changes
-- [ ] `updateRoverCardValues()`: iterate existing card DOM, patch values, skip `document.activeElement`
-- [ ] Manual smoke test: type rapidly in commands box — cursor stays in place; add/remove rover still works
+- [x] Refactor `controls.js` `renderControls()`: split into structural rebuild (ID/count changes) vs in-place value update (skip focused elements)
+- [x] Track `lastRoverIds` array; only rebuild rover card DOM when IDs change
+- [x] Track `lastObstacleCount`; only rebuild obstacle list when count changes
+- [x] `updateRoverCardValues()`: iterate existing card DOM, patch values, skip `document.activeElement`
+- [x] Manual smoke test: type rapidly in commands box — cursor stays in place; add/remove rover still works
 
-**V6a patch — Feature: Continue Run (incremental execution)**
+**V6a patch — Feature: Continue Run (incremental execution) — Completed**
 
-- [ ] `Session.resetToStart()`: rebuilds Arena from stored config; resets trails + stats; does NOT require frontend to re-send config
-- [ ] Refactor `Session.run()`: no longer rebuild Arena; parse current commands and execute on existing Arena; append trails (not replace); accumulate stats
-- [ ] `RoverController`: add `POST /api/session/{id}/reset` endpoint → calls `session.resetToStart()`, returns fresh snapshot
-- [ ] Frontend `toolbar.js` — Run button: do NOT clear commands after run; just re-fetch snapshot
-- [ ] Frontend `toolbar.js` — Reset button: call `POST /reset` instead of delete+create+configure
-- [ ] Frontend `statusBar.js`: show cumulative stats across runs + run counter ("Runs: N")
-- [ ] Test suite: `SessionContinueRunTest` (run twice, verify second run starts from first run's endpoint; trails accumulate; stats accumulate; reset restores starting positions)
-- [ ] E2E test: `WebE2EContinueRunTest` (POST /run twice, GET /state after each, verify positions chain correctly; POST /reset, verify back to start)
-- [ ] Manual smoke test: configure → Run "MMR" → change commands to "MM" → Run → verify continues from last position → Reset → back at start
+- [x] `Session.resetToStart()`: rebuilds Arena from stored config; resets trails + stats; does NOT require frontend to re-send config
+- [x] `Session.run(Map<String, String>)`: accepts optional override commands; reuses existing Arena; appends trails; accumulates stats
+- [x] `RoverController`: add `POST /api/session/{id}/reset` endpoint → calls `session.resetToStart()`, returns fresh snapshot; `POST /run` accepts `{"commands":{...}}` body
+- [x] Frontend `toolbar.js` — Run button: always reconfigures (injects current positions from snapshot for Continue Run); does NOT clear commands after run
+- [x] Frontend `toolbar.js` — Reset button: reconfigures with original form positions (rovers return to start)
+- [x] Frontend `statusBar.js`: show cumulative stats across runs
+- [x] Test suite: `SessionContinueRunTest` (run twice, verify second run starts from first run's endpoint; trails accumulate; stats accumulate; reset restores starting positions)
+- [x] E2E test: `WebE2EContinueRunTest` (POST /run twice, GET /state after each, verify positions chain correctly; POST /reset, verify back to start)
+- [x] Manual smoke test: configure → Run "MMR" → change commands to "MM" → Run → verify continues from last position → Reset → back at start
 
 ### V6b — Real-Time Event Streaming (SSE)
 
