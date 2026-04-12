@@ -14,6 +14,7 @@ import java.util.Set;
  * <pre>
  *   java -jar rover.jar [--grid WxH] [--wrap] [--obstacles "x1,y1;x2,y2"] [--on-conflict fail|skip|reverse] [--visual] [--delay ms] [--theme modern|minimal|mono] "COMMANDS"
  *   java -jar rover.jar --arena [--grid WxH] [--parallel] [--theme modern|minimal|mono] [--rover "ID:x,y,dir:commands"] ...
+ *   java -jar rover.jar --web [--port 8080]
  * </pre>
  */
 public class App {
@@ -67,6 +68,8 @@ public class App {
         boolean arenaMode = false;
         boolean parallel = false;
         List<String> roverSpecs = new ArrayList<>();
+        boolean webMode = false;
+        int webPort = com.rover.web.WebApp.DEFAULT_PORT;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -81,8 +84,17 @@ public class App {
                 case "--arena" -> arenaMode = true;
                 case "--parallel" -> parallel = true;
                 case "--rover" -> roverSpecs.add(args[++i]);
+                case "--web" -> webMode = true;
+                case "--port" -> webPort = Integer.parseInt(args[++i]);
                 default -> commands = args[i];
             }
+        }
+
+        if (webMode) {
+            com.rover.web.WebApp app = new com.rover.web.WebApp(webPort);
+            app.start();
+            System.out.println("Rover Web UI running at http://localhost:" + webPort);
+            return;
         }
 
         Theme theme = resolveTheme(themeName);

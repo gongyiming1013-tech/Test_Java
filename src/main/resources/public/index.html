@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Rover Control System</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/css/themes.css">
+  <link rel="stylesheet" href="/css/base.css">
+</head>
+<body class="theme-modern">
+
+  <header class="app-header">
+    <h1>🤖 Rover Control System</h1>
+    <div class="theme-selector">
+      <label for="theme-select">Theme:</label>
+      <select id="theme-select">
+        <option value="modern" selected>Modern</option>
+        <option value="minimal">Minimal</option>
+        <option value="mono">Mono</option>
+      </select>
+    </div>
+  </header>
+
+  <main class="app-main">
+
+    <!-- Left column: canvas + viewport strip + legend -->
+    <section class="canvas-column">
+      <div class="viewport-strip" id="viewport-strip">Viewport: —</div>
+      <canvas id="arena-canvas" width="600" height="600"></canvas>
+
+      <div class="legend" id="legend">
+        <div class="legend-row">
+          <span class="legend-label">Symbols:</span>
+          <span class="legend-item"><span class="symbol">▲▼◄►</span> Rover (N/S/W/E)</span>
+          <span class="legend-item"><span class="symbol">█</span> Obstacle</span>
+          <span class="legend-item"><span class="symbol">·</span> Trail</span>
+        </div>
+        <div class="legend-row">
+          <span class="legend-label">Colors:</span>
+          <span id="legend-colors"></span>
+        </div>
+        <div class="legend-row">
+          <span class="legend-label">Grid:</span>
+          <span id="legend-grid-info">—</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right column: config panel -->
+    <aside class="config-panel">
+
+      <fieldset>
+        <legend>Grid</legend>
+        <label>
+          Width: <input type="number" id="grid-width" placeholder="empty = ∞" min="1">
+        </label>
+        <label>
+          Height: <input type="number" id="grid-height" placeholder="empty = ∞" min="1">
+        </label>
+        <label>
+          <input type="checkbox" id="wrap-toggle"> Wrap boundaries
+        </label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Conflict Policy</legend>
+        <label><input type="radio" name="conflict" value="fail" checked> Fail</label>
+        <label><input type="radio" name="conflict" value="skip"> Skip</label>
+        <label><input type="radio" name="conflict" value="reverse"> Reverse</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Obstacles</legend>
+        <ul id="obstacle-list"></ul>
+        <div class="obstacle-adder">
+          <input type="number" id="obs-x" placeholder="x">
+          <input type="number" id="obs-y" placeholder="y">
+          <button type="button" id="add-obstacle">+ Add</button>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Rovers</legend>
+        <div id="rover-list"></div>
+        <button type="button" id="add-rover">+ Add rover</button>
+      </fieldset>
+
+      <fieldset>
+        <legend>Execution</legend>
+        <label><input type="checkbox" id="parallel-toggle"> Parallel mode</label>
+      </fieldset>
+
+      <div class="action-buttons">
+        <button type="button" id="run-button" class="primary">Run</button>
+        <button type="button" id="reset-button">Reset</button>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="status-bar">
+    <div id="status-line">Status: ready</div>
+    <div id="last-run-line">Last run: —</div>
+    <div id="stats-line">Stats: —</div>
+  </footer>
+
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
