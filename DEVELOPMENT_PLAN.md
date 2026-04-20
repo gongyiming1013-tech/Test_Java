@@ -1330,6 +1330,153 @@ Mostly a hardening phase, not new classes:
 
 ---
 
+### V6b — Real-Time Event Streaming (Planned)
+
+#### Goal
+
+Stream each rover step from the server to the browser as it happens via Server-Sent Events (SSE), so the user sees rovers animate move-by-move (with configurable pacing) instead of jumping from start to end after a synchronous run.
+
+#### Architecture
+
+```
+                                                 Session executor thread
+                                                ┌─────────────────────────┐
+  POST /api/session/{id}/run ───────────────────►│ ArenaStepExecutor       │
+                                                 │   for step in commands: │
+                                                 │     rover.execute(a)    │──► Rover.execute()
+                                                 │     Thread.sleep(delay) │        │
+                                                 └─────────────────────────┘        │ onStep / onComplete
+                                                                                    ▼
+                                                                          ┌──────────────────────┐
+                                                                          │ TrailListener (V6a)  │
+                                                                          │ SseRoverListener (V6b)│
+                                                                          └──────────┬───────────┘
+                                                                                     │ broadcast
+                                                                                     ▼
+   GET /api/session/{id}/events  ──►  Javalin SseClient  ◄─── Session.subscribers (CopyOnWriteArrayList)
+                                              │ EventSource
+                                              ▼
+                                       Browser canvas.js
+                                       (incremental render)
+```
+
+Domain layer (`Rover`, `Arena`, `RoverEvent`, `RoverListener`) is **unchanged**. V6b adds a pacing executor at the Arena scale, an SSE bridge listener, and a per-`Session` subscriber registry. Frontend gains an `EventSource` client and an event-driven render loop.
+
+#### Design Patterns
+
+| Pattern | Where | Why |
+|---|---|---|
+| Observer | `SseRoverListener implements RoverListener` | Reuse V5a contract — Rover already emits `RoverEvent`; adapt to SSE without touching domain |
+| Adapter | `RoverEventDto` ← `RoverEvent` | Translate domain event (with `Action` instance) into JSON-friendly DTO with rover ID context |
+| Mediator | `Session.broadcast(event)` | Single fan-out point so subscriber bookkeeping (auto-remove on failure) lives in one place |
+| Command | `ArenaStepExecutor` | Encapsulate "execute one rover-step + pace + emit" as a reusable unit (also positions us for V6c step button) |
+
+#### Strategy Comparison
+
+**Pacing & step granularity:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|---|---|---|---|---|
+| Reuse `Arena.executeSequential/Parallel` as-is | Fire all steps inside Arena's internal loop, no pacing | Zero new code | No way to interleave delay between steps; no per-step events from a controlled cadence | Rejected |
+| Per-rover `StepExecutor` (V5a) | Wrap each rover individually; loop externally | Reuses V5a class | Doesn't compose cleanly with parallel mode (round-robin needs cross-rover coordination) | Rejected |
+| **`ArenaStepExecutor`** | New class that drives Arena step-by-step (sequential or round-robin), inserts `delayMs` between steps | Clean SRP — pacing isolated from Session; reusable in V6c step button; preserves V5a `StepExecutor` for CLI `--visual` | One new class | **Adopted** |
+
+**Subscriber registry location:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|---|---|---|---|---|
+| Global on `SessionManager` | One subscriber list for all sessions, filter by session ID per event | Single bookkeeping spot | Cross-session leakage risk; filtering on every event; couples V6d isolation work to fan-out logic | Rejected |
+| **Per-`Session` `CopyOnWriteArrayList<SseClient>`** | Each session owns its subscribers | Natural isolation; no filtering; aligns with V6d isolation goals; lock-free reads at broadcast time | One list per session (negligible memory) | **Adopted** |
+
+**Event delivery on slow / disconnected subscribers:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|---|---|---|---|---|
+| Buffered per-subscriber queue + drain thread | Producer never blocks; subscriber consumes at its own pace | Decouples slow client | Memory growth on disconnected client; new lifecycle; complex | Rejected for V6b — over-engineered |
+| Synchronous send, fail-fast removal | Broadcast calls `sendEvent` directly; on `IOException` / `terminated()`, mark for removal | Simple; no buffering; failures don't stall the run | One slow client could briefly hold the run thread (mitigated: SSE writes to OS socket buffer, non-blocking in practice) | **Adopted** |
+| Drop oldest with bounded queue | Bounded buffer, drop on overflow | Bounded memory | Lossy; clients miss events without notice | Rejected |
+
+**`delayMs` location:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|---|---|---|---|---|
+| Per-`POST /run` request body only | Ad-hoc speed control without reconfigure | Flexible | Reset doesn't preserve last speed; no persistent default | Rejected |
+| In `ArenaConfig` only (default 500ms) | Stored alongside other config; survives Reset | Persistent default | Every speed change requires PUT /config — friction when dragging a slider | Rejected |
+| **Hybrid: in `ArenaConfig` (default 500ms) + optional `POST /run` override** | Config holds persistent default that survives Reset; `POST /run` body may include `delayMs` to override for one execution; UI sends current slider value with each Run | Frictionless slider drag (no PUT per change); persistent default; backward-compatible (override is optional) | Two code paths to plumb (mapper default + run override) | **Adopted** |
+| Server-side global flag | One `--delay` CLI flag at boot | Simplest | Can't differ per session | Rejected |
+
+**Initial state on subscribe:**
+
+| Approach | Description | Pros | Cons | Verdict |
+|---|---|---|---|---|
+| Subscriber must call `GET /state` first | Two requests to start | Cleaner separation | Race window: state fetched, then run starts and emits steps before subscribe registered | Rejected |
+| **First SSE event is a `state` snapshot** | On subscribe, immediately push current `SessionSnapshot` as `event: state`, then stream `step` / `complete` events | One connection; no race; canvas can paint baseline immediately | Slightly larger first event | **Adopted** |
+
+#### Design Discussion
+
+- **Backward compatibility:** `POST /run` still returns `202` immediately and runs asynchronously. Clients that don't subscribe to `/events` still get correct final state via `GET /state` once `running=false`. V6a tests must continue to pass unchanged.
+- **`delayMs` default:** 500ms. Slow enough to comfortably watch each step on small grids; UI exposes a slider so users can speed up. Clamped to `[0, 5000]` at validation. `delayMs=0` is allowed for tests and "skip animation" use cases — events still fire in order.
+- **`delayMs` override on `POST /run`:** request body may include an optional `delayMs` field (alongside the existing `commands` override). When present, it takes precedence over the config value for that one run only. UI sends the slider's current value with each Run so dragging the slider has zero backend friction (no `PUT /config` per drag). Reset still uses the config value.
+- **Sequential vs parallel ordering preserved:** `ArenaStepExecutor.executeSequential` finishes all steps for rover A before starting rover B, matching V4 semantics. `executeParallel` advances one step per rover per round in insertion order. Listeners fire on the same thread that calls `rover.execute(action)` (the session executor), so event order is deterministic per run.
+- **SSE keepalive:** Javalin's `SseClient.keepAlive()` is called inside the handler so the connection persists past handler return. Idle proxy keepalive (periodic `: ping` comment) is **deferred to V6d** — unnecessary for the localhost deployment that V6b targets, and naturally pairs with V6d's `--bind 0.0.0.0` LAN-exposure work.
+- **Subscriber cleanup:** `client.onClose(...)` removes the subscriber when the browser disconnects. A `terminated()` check before each `sendEvent` catches stale clients that weren't explicitly closed.
+- **`complete` event:** when a run finishes (success or `MoveBlockedException`), broadcast a single `event: complete` with final stats. The connection stays open — subsequent `Run` triggers fire more `step` events, so the UI can chain runs without reconnecting.
+- **Thread-safety:** `subscribers` is a `CopyOnWriteArrayList` so broadcast iterates without locking. `subscribe`/`unsubscribe` mutations are infrequent (one per browser open/close), so COW's write cost is acceptable.
+
+#### Class & Data Structure Changes
+
+**New classes (`com.rover.web` package):**
+
+| Class / Record | Purpose | Key methods / fields |
+|---|---|---|
+| `SseRoverListener implements RoverListener` | Bridges `RoverEvent` → SSE broadcast | Constructor: `(String roverId, Session session)`; `onStep(RoverEvent)` builds `RoverEventDto` and calls `session.broadcast("step", dto)`; `onComplete(RoverState)` is no-op (Session emits `complete` from runInternal) |
+| `RoverEventDto` (record) | JSON projection of `RoverEvent` with rover context | `String roverId`, `int stepIndex`, `int totalSteps`, `int prevX/prevY`, `String prevDir`, `int newX/newY`, `String newDir`, `String action` (e.g. `"MoveForward"`), `boolean blocked` |
+| `RunCompleteDto` (record) | Final run-level event payload | `String runId` (UUID), `int runCount`, `RunStats stats`, `Map<String, RoverStateDto> finalStates` |
+| `ArenaStepExecutor` | Paced, step-granular execution of multiple rovers | `executeSequential(Arena, Map<String, List<Action>>, long delayMs)`, `executeParallel(...)`. Inserts `Thread.sleep(delayMs)` between steps; honors thread interrupt for cancellation |
+
+**Modified classes:**
+
+| Class | Change |
+|---|---|
+| `ArenaConfig` (record) | Add field `Long delayMs` (nullable; mapper defaults null → 500). `ArenaConfigMapper` validates `0 <= delayMs <= 5000`, throws `INVALID_DELAY` otherwise |
+| `Session` | Add `subscribers: CopyOnWriteArrayList<SseClient>`; `subscribe(SseClient)`, `unsubscribe(SseClient)`, `broadcast(String eventName, Object payload)`. `run()` accepts optional `Long overrideDelayMs` (alongside existing `overrideCommands`). `runInternal()` attaches `SseRoverListener` per rover; calls `ArenaStepExecutor` with `overrideDelayMs ?: config.delayMs ?: 500`; emits final `complete` event after run finishes |
+| `RoverController` | Add `subscribeEvents(Context)` handler: opens SSE, sends initial `state` snapshot event, registers `client.onClose(() -> session.unsubscribe(client))`, calls `client.keepAlive()`. Modify `run(Context)` to also parse optional `delayMs` from request body and pass to `session.run` |
+| `WebApp` | Register `app.sse("/api/session/{id}/events", controller::subscribeEvents)` route |
+
+**Frontend changes (`src/main/resources/public/js/`):**
+
+| File | Change |
+|---|---|
+| `api/client.js` | New `subscribeEvents(sessionId, { onState, onStep, onComplete, onError })` returning a handle with `.close()`; uses native `EventSource` |
+| `state/store.js` | Add reducers for `state`, `step`, `complete` events; track `currentStep`, `totalSteps`, `lastEventBlocked` |
+| `ui/canvas.js` | Subscribe to store; on `step` event, paint single-cell update (rover at new position, append to trail, brief blocked flash on `blocked=true`); avoid full repaint per step |
+| `ui/statusBar.js` | Show "Step N/M" during run; update progress bar from event stream |
+| `ui/controls.js` | Add `delayMs` slider (range 0–5000, default 500) — value is sent as override on each `POST /run` (no PUT /config per drag); persistent default still flows through `PUT /config` when user explicitly saves config |
+| `ui/toolbar.js` | Add ⏩ "Skip animation" button next to Run — invokes `POST /run` with override `delayMs=0`; UI then waits for the `complete` event and renders the final state in one paint (skipping per-step animation) |
+| `main.js` | Open SSE subscription right after session creation; close on session delete |
+
+#### Test Plan
+
+| Dimension | Covers | Key Scenarios |
+|---|---|---|
+| `RoverEventDto` JSON shape | Jackson serialization | Field names match frontend expectations; action class → readable name (`MoveForwardAction` → `"MoveForward"`); `blocked=true/false` preserved; round-trip equality |
+| `SseRoverListener` event emission | `onStep` → broadcast | Listener forwards each event to `session.broadcast`; multiple listeners (one per rover) fire on the same step in deterministic order |
+| `ArenaStepExecutor` — sequential | Pacing + ordering | Rover A's steps complete in order before B starts; `delayMs=0` runs full speed; `delayMs=50` produces measurable wall-clock delay; thread interrupt aborts the loop |
+| `ArenaStepExecutor` — parallel | Round-robin pacing | One step per rover per round in insertion order; rovers with shorter command lists exit early; delay applied between rounds, not within |
+| `Session.subscribe / unsubscribe` | Subscriber lifecycle | Add subscriber → broadcast reaches it; unsubscribe → no further events; `terminated()` client auto-removed on next broadcast |
+| `Session.run` with subscribers | Event flow | All `step` events delivered in execution order; final `complete` event emitted once after run ends (success or `MoveBlockedException`); subscribers receive events even if `subscribe` happens before `run` starts |
+| `ArenaConfig.delayMs` validation | Mapper validation | null → default 500; 0 accepted; negative → `INVALID_DELAY` 400; >5000 → `INVALID_DELAY` 400; non-integer JSON → `INVALID_BODY` |
+| `POST /run` `delayMs` override | Per-run override | Body with `delayMs=50` overrides config's 500 for that run only; subsequent run without override falls back to config; invalid override → `INVALID_DELAY` 400; missing override field → uses config default |
+| `RoverController.subscribeEvents` | SSE endpoint | `GET /events` opens stream; first event is `state` snapshot; subsequent events are `step` then `complete`; unknown session → 404 (before stream opens); `client.onClose` triggers unsubscribe |
+| Concurrent subscribers fan-out | Multi-client | 3 `EventSource` clients on the same session all receive identical event sequence in same order; one client closing does not affect others |
+| Backward compatibility | V6a regression | All V6a tests pass unmodified; non-subscribing client still gets correct final state from `GET /state`; CLI modes unchanged |
+| End-to-end (HttpClient + EventSource emu) | Full SSE flow | Create session → configure with `delayMs=10` → subscribe → run → assert events arrive in correct order with correct payloads → `complete` event → close stream cleanly |
+| Frontend manual smoke | UI animation | Open browser, run `MMRMM` on 10×10 grid, observe rover step-by-step animation; trail builds incrementally; blocked move flashes; status bar shows "Step N/M"; multi-rover with different colors; ⏩ Skip button jumps directly to final state |
+| ⏩ Skip-animation button | Frontend toolbar + run override | Skip sends `delayMs=0`; backend emits all step events without pacing; UI suppresses per-step paint while skip is active and renders only the final `complete` state in one paint; subsequent normal Run respects slider value |
+| Coverage | Branch coverage | 95%+ maintained with Jacoco verification (frontend excluded) |
+
+---
+
 ## Roadmap & Implementation
 
 ### V0 (MVP) — Completed
@@ -1493,23 +1640,45 @@ Mostly a hardening phase, not new classes:
 
 ### V6b — Real-Time Event Streaming (SSE)
 
-**Scope:** Add Server-Sent Events endpoint (`GET /api/session/{id}/events`) that streams `RoverEvent` data to connected browsers as each step executes. Introduce `SseRoverListener` that bridges the domain `RoverListener` interface to Javalin SSE clients. Frontend subscribes via native `EventSource` and animates the Canvas step-by-step as events arrive. Multi-rover sessions fan events out to all subscribers. Uses V5c theme colors (now as CSS variables) for per-rover coloring. Supports configurable animation delay via `delayMs` in the config.
+**Scope:** Stream `RoverEvent` data from server to browser via Server-Sent Events so users see rovers animate step-by-step instead of jumping to final state. Introduces `ArenaStepExecutor` (paced, step-granular Arena runner), `SseRoverListener` (Observer adapter to SSE), per-`Session` subscriber registry, and a new `GET /api/session/{id}/events` endpoint. `delayMs` lives in `ArenaConfig` (default 100ms, validated 0–5000). Frontend uses native `EventSource` and an event-driven canvas render. Backward compatible: `POST /run` semantics unchanged; non-subscribing clients still get correct final state from `/state`.
 
-- [ ] `SseRoverListener`: implements `RoverListener`, serializes events to JSON via Jackson, pushes to session subscribers
-- [ ] `RoverEventDto`: JSON-friendly projection of `RoverEvent` with rover ID context
-- [ ] `Session.subscribe()` / `unsubscribe()`: `CopyOnWriteArrayList<SseClient>` management
-- [ ] `Session.run()`: attach `SseRoverListener` to each rover before execution; detach on completion
-- [ ] `RoverController.subscribeEvents()`: opens SSE stream, calls `session.subscribe()`, sends initial state snapshot
-- [ ] Graceful SSE cleanup: disconnect on client close, flush `complete` event on server shutdown
-- [ ] Frontend `js/api/client.js`: add `subscribeEvents(sessionId, handler)` using `EventSource`
-- [ ] Frontend `js/ui/canvas.js`: animated step-by-step rendering, trail accumulation, blocked flash
-- [ ] Frontend `js/state/store.js`: event-driven state updates; current step, total steps, blocked status
-- [ ] Per-rover CSS classes based on rover index (matches V5c `roverColor` palette)
-- [ ] Delay control: `config.delayMs` passed through to `StepExecutor` on the server side
-- [ ] Test suite: `SseRoverListenerTest` (event serialization, fan-out), `SseEndpointTest` (open stream, receive events, close), `SessionSubscriptionTest` (subscribe/unsubscribe lifecycle), fast-execution timing test (delay=0)
-- [ ] Integration test: full REST + SSE flow — create session, configure, subscribe, run, verify events arrive in order
-- [ ] Manual smoke test: watch rover animate in browser with matching V5c theme colors
-- [ ] Coverage verification (maintain 95%+ branch coverage)
+**Backend:**
+- [x] `RoverEventDto` record: rover ID + projected `RoverEvent` fields (prevX/Y/dir, newX/Y/dir, action name, stepIndex, totalSteps, blocked)
+- [x] `RunCompleteDto` record: runId (UUID), runCount, RunStats, finalStates map
+- [x] `SseRoverListener implements RoverListener`: holds `(roverId, Session)`; `onStep` builds `RoverEventDto` and calls `session.broadcast("step", dto)`; `onComplete` no-op
+- [x] `ArenaStepExecutor` class with `executeSequential(arena, commands, delayMs)` and `executeParallel(arena, commands, delayMs)` — drives Arena step-by-step, inserts `Thread.sleep(delayMs)` between steps, honors thread interrupt
+- [x] Modify `ArenaConfig`: add nullable `Long delayMs` field
+- [x] Modify `ArenaConfigMapper`: default null → 500; validate `0 <= delayMs <= 5000`; throw `ConfigValidationException("INVALID_DELAY", ...)` otherwise
+- [x] Modify `Session`: add `subscribers: CopyOnWriteArrayList<SseSink>`; `subscribe(SseSink)`, `unsubscribe(SseSink)`, `broadcast(String eventName, Object payload)` with `terminated()` check + auto-removal on send failure
+- [x] Modify `Session.run`: accept optional `Long overrideDelayMs` alongside existing `overrideCommands`
+- [x] Modify `Session.runInternal`: attach `SseRoverListener` per rover (alongside existing `TrailListener`); call `ArenaStepExecutor` with `overrideDelayMs ?: config.delayMs ?: 500`; emit `RunCompleteDto` via `broadcast("complete", ...)` after stats accumulation
+- [x] Modify `RoverController.run`: parse optional `delayMs` from request body, validate, pass to `session.run` (`INVALID_DELAY` 400 on bad value)
+- [x] Modify `RoverController`: add `subscribeEvents(SseClient)` — resolve session via `before` filter (404 if missing), open SSE, send initial `state` snapshot event, register `client.onClose(() -> session.unsubscribe(sink))`, call `client.keepAlive()`
+- [x] Modify `WebApp`: register `app.sse("/api/session/{id}/events", controller::subscribeEvents)` route + `before` filter for 404
+- [ ] (Deferred to V6d) Idle proxy keepalive (`: ping` every 15s) — not needed for localhost-only V6b deployment
+
+**Frontend:**
+- [x] `js/api/client.js`: add `subscribeEvents(sessionId, { onState, onStep, onComplete, onError })` returning `{ close() }` handle backed by `EventSource`; `runSession` accepts `delayMs`
+- [x] `js/state/store.js`: `applyStepEvent` / `applyCompleteEvent` reducers; tracks `delayMs` and `progress: { stepIndex, totalSteps, blocked }`; per-rover live position patched into snapshot; trails appended
+- [x] `js/ui/canvas.js`: existing snapshot-driven render reused — store update per step triggers re-render via existing subscription (simple, minimal code path)
+- [x] `js/ui/statusBar.js`: renders "Step N/M (pct%)" progress line; shows "[BLOCKED]" tag when event carries `blocked=true`
+- [x] `js/ui/toolbar.js`: delay slider bound to `store.delayMs`; Run button sends `delayMs` override; ⏩ Skip button forces `delayMs=0`
+- [x] `js/main.js`: SSE subscription opens right after session creation; closes on `beforeunload`
+
+**Tests:**
+- [x] `RoverEventDtoTest`: Jackson round-trip; action class name → readable form; field shape matches frontend contract
+- [x] `SseRoverListenerTest`: `onStep` produces correct DTO; multiple listeners (one per rover) emit deterministically
+- [x] `ArenaStepExecutorTest`: sequential ordering (A finishes before B); parallel round-robin order; `delayMs=0` runs full speed; `delayMs=50` produces measurable wall-clock delay; thread interrupt aborts loop cleanly
+- [x] `SessionSubscriptionTest`: subscribe/unsubscribe lifecycle; broadcast reaches all live subscribers; auto-remove on `terminated()` and send failure
+- [x] `SessionSseRunTest`: subscribe → run → assert step events in execution order → final `complete` event with correct stats; subscribe-before-run and subscribe-after-configure both work
+- [x] `ArenaConfigMapperDelayTest`: null → 500 default; 0 accepted; -1 → `INVALID_DELAY`; 5001 → `INVALID_DELAY`
+- [x] Delay override flow exercised in `WebE2ESseTest.runWithDelayOverride_acceptsAndExecutes` and `runWithInvalidDelayOverride_returns400`
+- [x] SSE 404 / state-first / step / complete coverage in `WebE2ESseTest`
+- [x] `WebE2ESseTest`: full HTTP flow using Java `HttpClient`/`HttpURLConnection` SSE pattern — create → configure → subscribe → run → assert event sequence and payloads → close
+- [x] Concurrent fan-out test: `WebE2ESseTest.multipleSubscribers_allReceiveSameEvents` — 2 simultaneous subscribers receive identical event sequences
+- [x] V6a backward-compatibility regression: all existing V6a tests pass (timing-sensitive ones explicitly set `delayMs=0L`); non-subscribing client gets correct final state from `GET /state`
+- [ ] Manual smoke: open browser, configure 10×10 grid + 2 rovers + obstacles, run with `delayMs=200`, observe step-by-step animation, blocked flash, multi-rover colors
+- [x] Coverage verification (overall 95% branch coverage; web package 92%)
 
 ### V6c — Interactive Editing
 

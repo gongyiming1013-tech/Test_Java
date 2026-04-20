@@ -243,6 +243,20 @@ canvas#arena-canvas {
   padding: 8px 16px;
 }
 
+.delay-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.delay-label input[type="range"] {
+  flex: 1 1 100%;
+}
+
+#progress-line { color: var(--accent); }
+
 .status-bar {
   background: var(--bg-panel);
   border-top: 1px solid var(--border);

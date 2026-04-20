@@ -32,9 +32,27 @@ export async function configureSession(sessionId, config) {
   return request("PUT", `/api/session/${sessionId}/config`, config);
 }
 
-export async function runSession(sessionId, commands) {
-  const body = commands ? { commands } : undefined;
-  return request("POST", `/api/session/${sessionId}/run`, body);
+export async function runSession(sessionId, commands, delayMs) {
+  const body = {};
+  if (commands) body.commands = commands;
+  if (delayMs !== undefined && delayMs !== null) body.delayMs = delayMs;
+  return request("POST", `/api/session/${sessionId}/run`,
+                 Object.keys(body).length ? body : undefined);
+}
+
+/**
+ * Opens an SSE stream for this session. Returns a handle with close().
+ * Callbacks fire for named events: state, step, complete.
+ */
+export function subscribeEvents(sessionId, { onState, onStep, onComplete, onError } = {}) {
+  const es = new EventSource(`/api/session/${sessionId}/events`);
+
+  es.addEventListener("state", (e) => onState?.(JSON.parse(e.data)));
+  es.addEventListener("step", (e) => onStep?.(JSON.parse(e.data)));
+  es.addEventListener("complete", (e) => onComplete?.(JSON.parse(e.data)));
+  es.onerror = (e) => onError?.(e);
+
+  return { close: () => es.close() };
 }
 
 export async function getSessionState(sessionId) {

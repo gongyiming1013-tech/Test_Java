@@ -3,7 +3,20 @@
  */
 
 export function renderStatusBar(state, el) {
-  const { status, error, snapshot } = state;
+  const { status, error, snapshot, progress } = state;
+
+  // Line 1b: progress (V6b)
+  if (el.progressLine) {
+    if (progress) {
+      const n = progress.stepIndex + 1;
+      const m = progress.totalSteps;
+      const pct = m ? Math.round((n / m) * 100) : 0;
+      const tag = progress.blocked ? " [BLOCKED]" : "";
+      el.progressLine.textContent = `Progress: Step ${n}/${m} (${pct}%)${tag}`;
+    } else {
+      el.progressLine.textContent = "Progress: —";
+    }
+  }
 
   // Line 1: status with color class
   el.statusLine.className = status === "running" ? "running" : status === "error" ? "error" : "";
