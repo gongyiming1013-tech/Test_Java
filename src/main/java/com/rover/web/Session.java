@@ -16,6 +16,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -46,6 +48,9 @@ public class Session {
     private final Map<String, List<Position>> trails = new LinkedHashMap<>();
     private RunStats stats = RunStats.empty();
     private int runCount = 0;
+
+    /** SSE subscribers receiving real-time {@code step} and {@code complete} events (V6b). */
+    private final CopyOnWriteArrayList<SseSink> subscribers = new CopyOnWriteArrayList<>();
 
     /**
      * Creates a session with a UUID and the given clock (used for TTL tracking).
@@ -140,15 +145,18 @@ public class Session {
     }
 
     /**
-     * Executes commands on the existing Arena. If {@code overrideCommands} is
-     * provided (non-null), those commands are used instead of the ones stored
-     * in the config. This enables "Continue Run" — the frontend sends new
-     * commands without reconfiguring (which would rebuild the Arena).
+     * V6b overload: executes commands with an optional per-run {@code delayMs}
+     * override. When {@code overrideDelayMs} is non-null, it takes precedence
+     * over {@link ArenaConfig#delayMs} for this single run only (subsequent
+     * runs without override fall back to the config value). Used by the
+     * "Skip animation" UI button (override = 0) and the speed slider.
      *
      * @param overrideCommands rover ID → command string, or null to use config's commands
+     * @param overrideDelayMs  per-run pacing override in ms, or null to use config default
      * @throws IllegalStateException if not configured or already running
      */
-    public synchronized Future<?> run(Map<String, String> overrideCommands) {
+    public synchronized Future<?> run(Map<String, String> overrideCommands,
+                                      Long overrideDelayMs) {
         if (arena == null || config == null) {
             throw new IllegalStateException("session not configured");
         }
@@ -160,22 +168,95 @@ public class Session {
         final Arena capturedArena = arena;
         final ArenaConfig capturedConfig = config;
         final Map<String, String> capturedCommands = overrideCommands;
+        final long effectiveDelayMs = overrideDelayMs != null
+                ? overrideDelayMs
+                : ArenaConfigMapper.validateAndDefaultDelay(capturedConfig.delayMs());
 
         return executor.submit(() -> {
             try {
-                runInternal(capturedArena, capturedConfig, capturedCommands);
+                runInternal(capturedArena, capturedConfig, capturedCommands, effectiveDelayMs);
             } finally {
                 running = false;
             }
         });
     }
 
+    /**
+     * Registers an SSE subscriber that will receive {@code state}, {@code step},
+     * and {@code complete} events for this session. Idempotent — adding the
+     * same sink twice is allowed but only registers once.
+     *
+     * @param sink the subscriber
+     */
+    public void subscribe(SseSink sink) {
+        subscribers.addIfAbsent(sink);
+    }
+
+    /**
+     * Removes a previously registered subscriber. No-op if not registered.
+     *
+     * @param sink the subscriber
+     * @return {@code true} if the sink was removed
+     */
+    public boolean unsubscribe(SseSink sink) {
+        return subscribers.remove(sink);
+    }
+
+    /**
+     * Sends a named event with the given payload to every live subscriber.
+     * Subscribers whose {@link SseSink#terminated()} returns {@code true} or
+     * which throw on {@code sendEvent} are removed in-place.
+     *
+     * @param eventName SSE event name (e.g., {@code "step"}, {@code "complete"})
+     * @param payload   JSON-serializable data
+     */
+    public void broadcast(String eventName, Object payload) {
+        List<SseSink> dead = null;
+        for (SseSink sink : subscribers) {
+            if (sink.terminated()) {
+                if (dead == null) dead = new ArrayList<>();
+                dead.add(sink);
+                continue;
+            }
+            try {
+                sink.sendEvent(eventName, payload);
+            } catch (Throwable t) {
+                if (dead == null) dead = new ArrayList<>();
+                dead.add(sink);
+            }
+        }
+        if (dead != null) subscribers.removeAll(dead);
+    }
+
+    /**
+     * Returns a snapshot of the current subscriber count. Primarily for tests
+     * and metrics.
+     *
+     * @return live subscriber count
+     */
+    public int getSubscriberCount() {
+        return subscribers.size();
+    }
+
+    /**
+     * Executes commands on the existing Arena. If {@code overrideCommands} is
+     * provided (non-null), those commands are used instead of the ones stored
+     * in the config. This enables "Continue Run" — the frontend sends new
+     * commands without reconfiguring (which would rebuild the Arena).
+     *
+     * @param overrideCommands rover ID → command string, or null to use config's commands
+     * @throws IllegalStateException if not configured or already running
+     */
+    public synchronized Future<?> run(Map<String, String> overrideCommands) {
+        return run(overrideCommands, null);
+    }
+
     /** Runs the commands synchronously. Called on the session executor thread. */
-    private void runInternal(Arena arena, ArenaConfig config, Map<String, String> overrideCommands) {
+    private void runInternal(Arena arena, ArenaConfig config, Map<String, String> overrideCommands, long delayMs) {
         long startNanos = System.nanoTime();
         int[] counters = {0, 0}; // [totalSteps, blockedCount]
 
-        Map<String, RoverListener> attachedListeners = new LinkedHashMap<>();
+        Map<String, List<RoverListener>> attachedListeners = new LinkedHashMap<>();
         Map<String, List<Action>> commandsMap = new LinkedHashMap<>();
         ActionParser parser = new ActionParser();
 
@@ -192,9 +273,16 @@ public class Session {
                     trails.get(roverId).add(rover.getPosition());
                 }
 
-                RoverListener listener = new TrailListener(roverId, counters);
-                rover.addListener(listener);
-                attachedListeners.put(roverId, listener);
+                List<RoverListener> listeners = new ArrayList<>(2);
+                RoverListener trailListener = new TrailListener(roverId, counters);
+                rover.addListener(trailListener);
+                listeners.add(trailListener);
+
+                RoverListener sseListener = new SseRoverListener(roverId, this);
+                rover.addListener(sseListener);
+                listeners.add(sseListener);
+
+                attachedListeners.put(roverId, listeners);
 
                 String cmds;
                 if (overrideCommands != null && overrideCommands.containsKey(roverId)) {
@@ -210,20 +298,24 @@ public class Session {
 
         try {
             if (config.parallel()) {
-                arena.executeParallel(commandsMap);
+                ArenaStepExecutor.executeParallel(arena, commandsMap, delayMs);
             } else {
-                arena.executeSequential(commandsMap);
+                ArenaStepExecutor.executeSequential(arena, commandsMap, delayMs);
             }
         } catch (MoveBlockedException ignored) {
             // FAIL policy aborts — stats/trails already reflect the partial run
         } finally {
             // Detach listeners
-            for (Map.Entry<String, RoverListener> entry : attachedListeners.entrySet()) {
-                arena.getRover(entry.getKey()).removeListener(entry.getValue());
+            for (Map.Entry<String, List<RoverListener>> entry : attachedListeners.entrySet()) {
+                Rover r = arena.getRover(entry.getKey());
+                for (RoverListener l : entry.getValue()) r.removeListener(l);
             }
         }
 
         long durationMs = (System.nanoTime() - startNanos) / 1_000_000L;
+        RunStats updatedStats;
+        int currentRunCount;
+        Map<String, RoverStateDto> finalStates = new LinkedHashMap<>();
         synchronized (this) {
             // Accumulate stats across runs (not replace)
             RunStats prev = stats;
@@ -234,7 +326,21 @@ public class Session {
                     config.rovers().size(),
                     config.obstacles() == null ? 0 : config.obstacles().size()
             );
+            updatedStats = stats;
+            currentRunCount = runCount;
+            for (RoverSpecDto spec : config.rovers()) {
+                Rover r = arena.getRover(spec.id());
+                RoverState s = r.getState();
+                finalStates.put(spec.id(), new RoverStateDto(
+                        s.position().x(), s.position().y(), s.direction().name()));
+            }
         }
+
+        broadcast("complete", new RunCompleteDto(
+                UUID.randomUUID().toString(),
+                currentRunCount,
+                updatedStats,
+                finalStates));
     }
 
     /**

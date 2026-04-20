@@ -14,33 +14,18 @@
 import * as api from "../api/client.js";
 
 export function bindToolbar(store, el) {
-  el.runButton.addEventListener("click", async () => {
-    const { sessionId, config, snapshot } = store.get();
-    if (!sessionId) return;
-    try {
-      store.update({ status: "running", error: null });
+  el.runButton.addEventListener("click", () => triggerRun(store, /*skip*/ false));
+  if (el.skipButton) {
+    el.skipButton.addEventListener("click", () => triggerRun(store, /*skip*/ true));
+  }
 
-      // Build the config to send. For Continue Run, update rover starting
-      // positions to their current positions from the last snapshot.
-      const configToSend = buildRunConfig(config, snapshot);
-      await api.configureSession(sessionId, configToSend);
-
-      // Build commands map and run
-      const commands = {};
-      for (const rover of (config.rovers ?? [])) {
-        commands[rover.id] = rover.commands ?? "";
-      }
-      await api.runSession(sessionId, commands);
-
-      // Brief wait for async completion, then fetch state
-      await new Promise(resolve => setTimeout(resolve, 150));
-      const newSnapshot = await api.getSessionState(sessionId);
-      store.update({ snapshot: newSnapshot, status: "done" });
-    } catch (err) {
-      console.error(err);
-      store.update({ status: "error", error: err.message });
-    }
-  });
+  if (el.delaySlider) {
+    el.delaySlider.addEventListener("input", () => {
+      const v = Number(el.delaySlider.value);
+      if (el.delayValue) el.delayValue.textContent = String(v);
+      store.update({ delayMs: v });
+    });
+  }
 
   el.resetButton.addEventListener("click", async () => {
     const { sessionId, config } = store.get();
@@ -61,6 +46,34 @@ export function bindToolbar(store, el) {
     document.body.className = `theme-${theme}`;
     store.update({ theme });
   });
+}
+
+/**
+ * Reconfigures (to pick up structural changes + Continue Run positions),
+ * then triggers POST /run with a per-run delayMs override. Subsequent SSE
+ * events from the stream drive the animation; this handler only kicks off
+ * the run and handles setup errors.
+ */
+async function triggerRun(store, skip) {
+  const { sessionId, config, snapshot, delayMs } = store.get();
+  if (!sessionId) return;
+  try {
+    store.update({ status: "running", error: null, progress: null });
+
+    const configToSend = buildRunConfig(config, snapshot);
+    await api.configureSession(sessionId, configToSend);
+
+    const commands = {};
+    for (const rover of (config.rovers ?? [])) {
+      commands[rover.id] = rover.commands ?? "";
+    }
+    const effectiveDelay = skip ? 0 : (delayMs ?? 0);
+    await api.runSession(sessionId, commands, effectiveDelay);
+    // SSE handler in main.js drives the rest.
+  } catch (err) {
+    console.error(err);
+    store.update({ status: "error", error: err.message });
+  }
 }
 
 /**

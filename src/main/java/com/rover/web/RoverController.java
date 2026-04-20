@@ -90,14 +90,74 @@ public class RoverController {
                 }
             }
 
-            session.run(overrideCommands);
+            Long overrideDelayMs = extractDelayOverride(body);
+            if (overrideDelayMs != null) {
+                session.run(overrideCommands, ArenaConfigMapper.validateAndDefaultDelay(overrideDelayMs));
+            } else {
+                session.run(overrideCommands);
+            }
             session.touch();
             ctx.status(HttpStatus.ACCEPTED);
             ctx.json(Map.of("status", "running"));
+        } catch (ConfigValidationException e) {
+            ctx.status(HttpStatus.BAD_REQUEST);
+            ctx.json(new WebError(e.getCode(), e.getMessage()));
         } catch (IllegalStateException e) {
             ctx.status(HttpStatus.CONFLICT);
             ctx.json(new WebError("CONFLICT", e.getMessage()));
         }
+    }
+
+    /**
+     * Lightweight scan of the JSON body for an optional {@code delayMs} field.
+     * Returns {@code null} when absent so V6a-shaped requests stay on the
+     * unchanged code path. Real range validation is delegated to
+     * {@link ArenaConfigMapper#validateAndDefaultDelay(Long)}.
+     */
+    private static Long extractDelayOverride(String body) {
+        if (body == null || body.isBlank() || !body.contains("delayMs")) {
+            return null;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode root =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(body);
+            com.fasterxml.jackson.databind.JsonNode node = root.get("delayMs");
+            if (node == null || node.isNull()) return null;
+            if (!node.isNumber()) {
+                throw new ConfigValidationException("INVALID_DELAY",
+                        "delayMs must be a number");
+            }
+            return node.asLong();
+        } catch (ConfigValidationException e) {
+            throw e;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * Handles {@code GET /api/session/{id}/events}. Opens an SSE stream,
+     * sends an initial {@code state} snapshot event, registers
+     * {@code client.onClose} to auto-unsubscribe, calls {@code keepAlive()},
+     * and adds the wrapped {@link SseSink} to the session's subscriber list.
+     *
+     * <p>Returns {@code 404} (before opening the stream) if the session is unknown.</p>
+     */
+    public void subscribeEvents(io.javalin.http.sse.SseClient client) {
+        String id = client.ctx().pathParam("id");
+        Session session = sessionManager.getSession(id);
+        if (session == null) {
+            client.ctx().status(HttpStatus.NOT_FOUND);
+            client.ctx().json(new WebError("SESSION_NOT_FOUND", "session not found: " + id));
+            return;
+        }
+        session.touch();
+
+        SseSink sink = new JavalinSseSink(client);
+        client.keepAlive();
+        client.onClose(() -> session.unsubscribe(sink));
+        sink.sendEvent("state", session.getSnapshot());
+        session.subscribe(sink);
     }
 
     /**

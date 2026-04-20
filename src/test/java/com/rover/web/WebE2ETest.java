@@ -147,7 +147,7 @@ public class WebE2ETest {
     public void getState_afterRun_returnsFinalPosition() throws Exception {
         String sessionId = createSession();
         configure(sessionId, new ArenaConfig(10, 10, false, List.of(), "fail",
-                List.of(new RoverSpecDto("R1", 0, 0, "N", "MMM")), false));
+                List.of(new RoverSpecDto("R1", 0, 0, "N", "MMM")), false, 0L));
         post("/api/session/" + sessionId + "/run", "");
 
         // Give the async run a moment to complete

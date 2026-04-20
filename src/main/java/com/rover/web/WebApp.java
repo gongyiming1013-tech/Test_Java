@@ -87,6 +87,15 @@ public class WebApp {
         javalin.post("/api/session/{id}/reset", controller::reset);
         javalin.get("/api/session/{id}/state", controller::getState);
         javalin.delete("/api/session/{id}", controller::deleteSession);
+        javalin.before("/api/session/{id}/events", ctx -> {
+            String id = ctx.pathParam("id");
+            if (sessionManager.getSession(id) == null) {
+                ctx.status(io.javalin.http.HttpStatus.NOT_FOUND);
+                ctx.json(new WebError("SESSION_NOT_FOUND", "session not found: " + id));
+                ctx.skipRemainingHandlers();
+            }
+        });
+        javalin.sse("/api/session/{id}/events", controller::subscribeEvents);
 
         javalin.start(port);
 

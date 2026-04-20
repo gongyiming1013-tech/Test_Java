@@ -88,10 +88,15 @@
       <fieldset>
         <legend>Execution</legend>
         <label><input type="checkbox" id="parallel-toggle"> Parallel mode</label>
+        <label class="delay-label">
+          Delay: <output id="delay-value">200</output> ms
+          <input type="range" id="delay-slider" min="0" max="2000" step="50" value="200">
+        </label>
       </fieldset>
 
       <div class="action-buttons">
         <button type="button" id="run-button" class="primary">Run</button>
+        <button type="button" id="skip-button" title="Skip animation (delay=0)">⏩ Skip</button>
         <button type="button" id="reset-button">Reset</button>
       </div>
     </aside>
@@ -99,6 +104,7 @@
 
   <footer class="status-bar">
     <div id="status-line">Status: ready</div>
+    <div id="progress-line">Progress: —</div>
     <div id="last-run-line">Last run: —</div>
     <div id="stats-line">Stats: —</div>
   </footer>

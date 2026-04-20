@@ -28,8 +28,37 @@ import java.util.Set;
  */
 public final class ArenaConfigMapper {
 
+    /** Default SSE step pacing applied when the config omits {@code delayMs}. */
+    public static final long DEFAULT_DELAY_MS = 500L;
+
+    /** Inclusive upper bound for {@code delayMs} (5 seconds). */
+    public static final long MAX_DELAY_MS = 5000L;
+
     private ArenaConfigMapper() {
         // Utility class
+    }
+
+    /**
+     * Validates and resolves an animation delay value.
+     *
+     * <p>{@code null} resolves to {@link #DEFAULT_DELAY_MS}. Negative values or
+     * values exceeding {@link #MAX_DELAY_MS} throw {@link ConfigValidationException}
+     * with code {@code INVALID_DELAY}. Used for both the persistent
+     * {@link ArenaConfig#delayMs} value and per-{@code POST /run} overrides.</p>
+     *
+     * @param delayMs raw value from JSON, may be null
+     * @return validated delay in milliseconds
+     * @throws ConfigValidationException if out of range
+     */
+    public static long validateAndDefaultDelay(Long delayMs) {
+        if (delayMs == null) {
+            return DEFAULT_DELAY_MS;
+        }
+        if (delayMs < 0 || delayMs > MAX_DELAY_MS) {
+            throw new ConfigValidationException("INVALID_DELAY",
+                    "delayMs must be in [0, " + MAX_DELAY_MS + "] (got " + delayMs + ")");
+        }
+        return delayMs;
     }
 
     /**

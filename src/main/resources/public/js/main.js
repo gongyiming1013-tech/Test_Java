@@ -27,6 +27,7 @@ const el = {
   roverList:     document.getElementById("rover-list"),
   addRover:      document.getElementById("add-rover"),
   runButton:     document.getElementById("run-button"),
+  skipButton:    document.getElementById("skip-button"),
   resetButton:   document.getElementById("reset-button"),
   themeSelect:   document.getElementById("theme-select"),
   canvas:        document.getElementById("arena-canvas"),
@@ -34,8 +35,11 @@ const el = {
   legendColors:  document.getElementById("legend-colors"),
   legendGridInfo:document.getElementById("legend-grid-info"),
   statusLine:    document.getElementById("status-line"),
+  progressLine:  document.getElementById("progress-line"),
   lastRunLine:   document.getElementById("last-run-line"),
   statsLine:     document.getElementById("stats-line"),
+  delaySlider:   document.getElementById("delay-slider"),
+  delayValue:    document.getElementById("delay-value"),
 };
 
 bindControls(store, el);
@@ -46,13 +50,25 @@ store.subscribe(state => renderArena(el.canvas, state.config, state.snapshot));
 store.subscribe(state => renderLegend(state, el));
 store.subscribe(state => renderStatusBar(state, el));
 
-// Bootstrap: create a fresh session
+// Bootstrap: create a fresh session and open SSE stream
+let sseHandle = null;
 (async () => {
   try {
     const sessionId = await api.createSession();
     store.update({ sessionId });
+
+    sseHandle = api.subscribeEvents(sessionId, {
+      onState: (snapshot) => store.update({ snapshot }),
+      onStep:  (ev) => store.applyStepEvent(ev),
+      onComplete: (ev) => store.applyCompleteEvent(ev),
+      onError: (e) => console.warn("SSE connection issue", e),
+    });
   } catch (err) {
     console.error("Failed to create session:", err);
     store.update({ status: "error", error: "Could not connect to server" });
   }
 })();
+
+window.addEventListener("beforeunload", () => {
+  sseHandle?.close();
+});
