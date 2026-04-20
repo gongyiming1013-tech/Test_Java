@@ -47,7 +47,7 @@ public class WebE2EContinueRunTest {
     public void continueRun_secondRunContinuesFromFirstEndpoint() throws Exception {
         String sid = createSession();
         configure(sid, new ArenaConfig(10, 10, false, List.of(), "fail",
-                List.of(new RoverSpecDto("R1", 0, 0, "N", "MM")), false));
+                List.of(new RoverSpecDto("R1", 0, 0, "N", "MM")), false, 0L));
 
         // First run
         runWithCommands(sid, Map.of("R1", "MM"));
@@ -71,7 +71,7 @@ public class WebE2EContinueRunTest {
     public void continueRun_statsAccumulateAcrossRuns() throws Exception {
         String sid = createSession();
         configure(sid, new ArenaConfig(10, 10, false, List.of(), "fail",
-                List.of(new RoverSpecDto("R1", 0, 0, "N", "MM")), false));
+                List.of(new RoverSpecDto("R1", 0, 0, "N", "MM")), false, 0L));
 
         runWithCommands(sid, Map.of("R1", "MM"));
         Thread.sleep(200);
@@ -90,7 +90,7 @@ public class WebE2EContinueRunTest {
     public void reset_returnsRoversToStartingPositions() throws Exception {
         String sid = createSession();
         configure(sid, new ArenaConfig(10, 10, false, List.of(), "fail",
-                List.of(new RoverSpecDto("R1", 0, 0, "N", "MMM")), false));
+                List.of(new RoverSpecDto("R1", 0, 0, "N", "MMM")), false, 0L));
 
         runWithCommands(sid, Map.of("R1", "MMM"));
         Thread.sleep(200);
@@ -113,7 +113,7 @@ public class WebE2EContinueRunTest {
     public void reset_thenRun_executesFromStartingPosition() throws Exception {
         String sid = createSession();
         configure(sid, new ArenaConfig(10, 10, false, List.of(), "fail",
-                List.of(new RoverSpecDto("R1", 0, 0, "N", "MMM")), false));
+                List.of(new RoverSpecDto("R1", 0, 0, "N", "MMM")), false, 0L));
 
         runWithCommands(sid, Map.of("R1", "MMM"));
         Thread.sleep(200);
